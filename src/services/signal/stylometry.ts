@@ -5,6 +5,7 @@ export interface TextStylometryMetrics {
   sentenceCount: number;
   avgSentenceLength: number;
   sentenceLengthStd: number;
+  sentenceLengthCv: number; // Coefficient of variation (std / mean)
   burstiness: number; // [-1..1]; higher = more human-like length variation
   typeTokenRatio: number; // lexical diversity
   hapaxRatio: number; // words appearing exactly once / total words
@@ -12,16 +13,20 @@ export interface TextStylometryMetrics {
   trigramRepetitionRate: number;
   sentenceStarterDiversity: number;
   aiTransitionDensity: number; // per 100 words
+  aiPhraseHits: string[];
+  isShortPassage: boolean;
   lowReliabilityShortText: boolean;
 }
 
-const COMMON_AI_TRANSITIONS = [
+const COMMON_AI_PHRASES = [
+  // Essay / formal LLM transitions & buzzwords
   'moreover',
   'furthermore',
   'additionally',
   'in conclusion',
   'it is important to note',
   'it is worth noting',
+  "it's worth noting",
   'in summary',
   'on the other hand',
   'delve into',
@@ -30,6 +35,29 @@ const COMMON_AI_TRANSITIONS = [
   'multifaceted',
   'pivotal role',
   'underscores the importance',
+  'comprehensive overview',
+  'ever-evolving landscape',
+  'foster innovation',
+  'streamline',
+  'in today\'s fast-paced',
+  // Conversational / email / outreach LLM clichés
+  "hope you're doing well",
+  'hope you are doing well',
+  'hope this email finds you well',
+  'hope this message finds you well',
+  'wanted to connect with you',
+  'regarding an important matter',
+  'look forward to your response',
+  'looking forward to hearing from you',
+  'thank you for your time and consideration',
+  'thanks for your time and consideration',
+  'please do not hesitate to reach out',
+  "don't hesitate to reach out",
+  'feel free to reach out',
+  'please let me know if you have any questions',
+  'at your earliest convenience',
+  'i would be happy to assist',
+  'as an ai',
 ];
 
 export function analyzeTextStylometry(rawText: string): TextStylometryMetrics {
@@ -54,6 +82,8 @@ export function analyzeTextStylometry(rawText: string): TextStylometryMetrics {
         sentenceLengths.length
       : 0;
   const sentenceLengthStd = Math.sqrt(variance);
+  const sentenceLengthCv =
+    avgSentenceLength > 0 ? sentenceLengthStd / avgSentenceLength : 0;
   const burstiness =
     sentenceLengthStd + avgSentenceLength > 0
       ? (sentenceLengthStd - avgSentenceLength) / (sentenceLengthStd + avgSentenceLength)
@@ -100,12 +130,17 @@ export function analyzeTextStylometry(rawText: string): TextStylometryMetrics {
   );
   const sentenceStarterDiversity = sentenceCount > 0 ? starters.size / sentenceCount : 0;
 
-  // Common AI transition phrase density
+  // Common AI transition & template phrase density
   const lower = cleaned.toLowerCase();
   let transitionHits = 0;
-  for (const phrase of COMMON_AI_TRANSITIONS) {
-    const matches = lower.match(new RegExp(`\\b${phrase}\\b`, 'g'));
-    if (matches) transitionHits += matches.length;
+  const aiPhraseHits: string[] = [];
+  for (const phrase of COMMON_AI_PHRASES) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matches = lower.match(new RegExp(`\\b${escaped}\\b`, 'g'));
+    if (matches && matches.length > 0) {
+      transitionHits += matches.length;
+      aiPhraseHits.push(phrase);
+    }
   }
   const aiTransitionDensity = wordCount > 0 ? (transitionHits / wordCount) * 100 : 0;
 
@@ -114,6 +149,7 @@ export function analyzeTextStylometry(rawText: string): TextStylometryMetrics {
     sentenceCount,
     avgSentenceLength: Number(avgSentenceLength.toFixed(1)),
     sentenceLengthStd: Number(sentenceLengthStd.toFixed(1)),
+    sentenceLengthCv: Number(sentenceLengthCv.toFixed(3)),
     burstiness: Number(burstiness.toFixed(3)),
     typeTokenRatio: Number(typeTokenRatio.toFixed(3)),
     hapaxRatio: Number(hapaxRatio.toFixed(3)),
@@ -121,6 +157,8 @@ export function analyzeTextStylometry(rawText: string): TextStylometryMetrics {
     trigramRepetitionRate: Number(trigramRepetitionRate.toFixed(3)),
     sentenceStarterDiversity: Number(sentenceStarterDiversity.toFixed(3)),
     aiTransitionDensity: Number(aiTransitionDensity.toFixed(2)),
-    lowReliabilityShortText: wordCount < 60 || sentenceCount < 3,
+    aiPhraseHits,
+    isShortPassage: wordCount < 60 || sentenceCount < 3,
+    lowReliabilityShortText: wordCount < 15 || sentenceCount < 1,
   };
 }

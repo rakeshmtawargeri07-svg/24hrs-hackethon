@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ThemeProvider } from './context/ThemeContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { LandingPage } from './components/LandingPage';
 import { WorkspaceShell } from './components/WorkspaceShell';
 
@@ -9,7 +11,7 @@ function TruthLensRoot() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#0B1120] text-sm text-slate-400">
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC] text-sm font-medium text-slate-500 dark:bg-[#0B1120] dark:text-slate-400">
         Loading TruthLens...
       </div>
     );
@@ -24,8 +26,12 @@ function TruthLensRoot() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <TruthLensRoot />
-    </AuthProvider>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <AuthProvider>
+          <TruthLensRoot />
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

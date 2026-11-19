@@ -22,15 +22,15 @@ export function AudioForensicsView({
 
   if (audios.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-slate-700 bg-[#11192B] p-12 text-center">
-        <h3 className="text-base font-semibold text-slate-100">No Audio Yet</h3>
-        <p className="mt-2 text-sm text-slate-400">
-          Upload MP3, WAV, or M4A recordings in a new check to run STFT spectrogram, 13-band MFCC, transcript, and synthetic voice detection.
+      <div className="rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center dark:border-slate-700 dark:bg-[#11192B]">
+        <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">No Audio Yet</h3>
+        <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+          Upload MP3, WAV, or M4A recordings in a new investigation to run STFT spectrogram, 13-band MFCC, transcript, and synthetic voice detection.
         </p>
         <button
           type="button"
           onClick={onGoToUpload}
-          className="mt-5 rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"
+          className="mt-5 rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors"
         >
           Upload Audio
         </button>
@@ -59,15 +59,17 @@ export function AudioForensicsView({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {audios.length > 1 && (
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-800 bg-[#11192B] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
           <div className="flex items-center gap-3">
-            <label className="text-xs font-medium text-slate-400">Audio File</label>
+            <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              Audio File
+            </label>
             <select
               value={current.id}
               onChange={(e) => setSelectedId(Number(e.target.value))}
-              className="rounded-lg border border-slate-700 bg-[#0B1120] px-3 py-1.5 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-100 dark:focus:border-sky-500"
             >
               {audios.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -93,18 +95,18 @@ export function AudioForensicsView({
       />
 
       {/* Waveform Visualisation & Player */}
-      <div className="rounded-xl border border-slate-800 bg-[#11192B] p-5">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
-            <AudioLines className="h-4 w-4 text-sky-400" />
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-100">
+            <AudioLines className="h-4 w-4 text-blue-700 dark:text-sky-400" />
             Audio Waveform (Click to Jump)
           </h3>
-          <span className="font-mono text-xs tabular-nums text-slate-400">
+          <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
             {currentTime.toFixed(1)}s / {durationSec > 0 ? `${durationSec.toFixed(1)}s` : '—'}
           </span>
         </div>
 
-        <div className="relative mt-4 rounded-lg border border-slate-800 bg-[#0B1120] p-4">
+        <div className="relative mt-4 rounded-xl border border-slate-800 bg-[#0F172A] p-4">
           <div className="relative flex h-28 items-center gap-[3px]">
             {peaks.map((peak, idx) => {
               const barTime = durationSec > 0 ? (idx / peaks.length) * durationSec : 0;
@@ -128,7 +130,7 @@ export function AudioForensicsView({
                     style={{ height: `${heightPct}%` }}
                     className={`w-full rounded-sm transition-colors ${
                       isFlagged
-                        ? 'bg-amber-400'
+                        ? 'bg-rose-400'
                         : isPlayed
                         ? 'bg-sky-400'
                         : 'bg-slate-700 group-hover:bg-slate-500'
@@ -150,66 +152,66 @@ export function AudioForensicsView({
           </div>
         </div>
 
-        <p className="mt-4 text-sm leading-relaxed text-slate-300">
+        <p className="mt-4 text-sm leading-relaxed text-slate-700 dark:text-slate-300">
           {current.technicalSummary}
         </p>
       </div>
 
       {/* Spectrogram & MFCC Metrics + Spoken Words */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        <div className="rounded-xl border border-slate-800 bg-[#11192B] p-5 lg:col-span-5">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
-            <Volume2 className="h-4 w-4 text-sky-400" />
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B] lg:col-span-5">
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-slate-100">
+            <Volume2 className="h-4 w-4 text-blue-700 dark:text-sky-400" />
             Spectrogram &amp; MFCC Signals
           </h3>
-          <dl className="mt-4 divide-y divide-slate-800/80 text-xs">
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">Duration &amp; Rate</dt>
-              <dd className="font-mono tabular-nums text-slate-200">
+          <dl className="mt-4 divide-y divide-slate-100 text-xs dark:divide-slate-800">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">Duration &amp; Rate</dt>
+              <dd className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {durationSec.toFixed(2)}s
                 {meta.sampleRate ? ` · ${meta.sampleRate} Hz` : ''}
               </dd>
             </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">Spectral Centroid</dt>
-              <dd className="font-mono tabular-nums text-slate-200">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">Spectral Centroid</dt>
+              <dd className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {meta.spectralCentroidHz ? `${meta.spectralCentroidHz} Hz` : '—'}
               </dd>
             </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">Spectral Flatness</dt>
-              <dd className="font-mono tabular-nums text-slate-200">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">Spectral Flatness</dt>
+              <dd className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {meta.spectralFlatness !== undefined ? String(meta.spectralFlatness) : '—'}
               </dd>
             </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">High-Freq Cutoff (&gt;6kHz)</dt>
-              <dd className="font-mono tabular-nums text-slate-200">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">High-Freq Cutoff (&gt;6kHz)</dt>
+              <dd className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {typeof meta.highFreqCutoffRatio === 'number'
                   ? `${(Number(meta.highFreqCutoffRatio) * 100).toFixed(1)}%`
                   : '—'}
               </dd>
             </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">Noise Floor &amp; Silence</dt>
-              <dd className="font-mono tabular-nums text-slate-200">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">Noise Floor &amp; Silence</dt>
+              <dd className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {meta.noiseFloorDb !== undefined ? `${meta.noiseFloorDb} dB · ` : ''}
                 {typeof meta.silenceRatio === 'number'
                   ? `${(Number(meta.silenceRatio) * 100).toFixed(1)}%`
                   : '—'}
               </dd>
             </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">MFCC (C1–C3 Mean)</dt>
-              <dd className="font-mono tabular-nums text-slate-200">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">MFCC (C1–C3 Mean)</dt>
+              <dd className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                 {Array.isArray(meta.mfccMean)
                   ? (meta.mfccMean as number[]).slice(0, 3).join(', ')
                   : '—'}
               </dd>
             </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-slate-400">AI Generator Tags (Optional)</dt>
-              <dd className="text-slate-200">
+            <div className="flex justify-between py-2.5">
+              <dt className="text-slate-500 dark:text-slate-400">AI Generator Tags (Optional)</dt>
+              <dd className="font-mono text-slate-800 dark:text-slate-200">
                 {Array.isArray(provenance?.aiGeneratorSignatures) &&
                 provenance.aiGeneratorSignatures.length > 0
                   ? provenance.aiGeneratorSignatures.join(', ')
@@ -219,13 +221,15 @@ export function AudioForensicsView({
           </dl>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-[#11192B] p-5 lg:col-span-7">
-          <h3 className="text-sm font-semibold text-slate-100">Spoken Words (Transcript)</h3>
-          <div className="mt-3 max-h-60 overflow-y-auto rounded-lg border border-slate-800 bg-[#0B1120] p-4 text-sm leading-relaxed text-slate-300">
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B] lg:col-span-7">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+            Spoken Words (Transcript)
+          </h3>
+          <div className="mt-3 max-h-60 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed text-slate-700 dark:border-slate-800 dark:bg-[#0B1120] dark:text-slate-200">
             {current.extractedText ? (
               current.extractedText
             ) : (
-              <span className="text-slate-500">
+              <span className="text-slate-400 dark:text-slate-500">
                 No spoken words found in this recording.
               </span>
             )}
@@ -234,13 +238,15 @@ export function AudioForensicsView({
       </div>
 
       {/* Findings */}
-      <div className="rounded-xl border border-slate-800 bg-[#11192B] p-5">
-        <h3 className="text-sm font-semibold text-slate-100">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
+        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
           What Was Found in the Audio
         </h3>
         <div className="mt-4 space-y-3">
           {findings.length === 0 ? (
-            <p className="text-xs text-slate-500">No unusual audio issues found.</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              No unusual audio issues found.
+            </p>
           ) : (
             findings.map((f) => (
               <ExplainableFindingCard

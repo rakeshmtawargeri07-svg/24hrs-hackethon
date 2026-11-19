@@ -119,16 +119,31 @@ export async function analyzeTextEvidence(params: {
   }
 
   const deterministicFindings: AnalyzedFinding[] = [];
+  if (stylometry.aiPhraseHits.length > 0) {
+    const hitCount = stylometry.aiPhraseHits.length;
+    deterministicFindings.push({
+      whatDetected: `Common LLM phrasing / template markers (${hitCount} match${hitCount === 1 ? '' : 'es'})`,
+      whereDetected: filename,
+      whyFlagged: `Matched high-probability AI template phrasing: "${stylometry.aiPhraseHits.slice(0, 5).join('", "')}".`,
+      analysisMethod: 'Deterministic Stylometry & Phrase Matcher',
+      confidence: Math.min(88, 52 + hitCount * 14),
+      limitations:
+        'Polite business/email phrases can also appear in human-written templates; combine with linguistic predictability analysis.',
+      classification: hitCount >= 2 ? 'Suspicious' : 'Inconclusive',
+      regionJson: null,
+    });
+  }
+
   if (stylometry.lowReliabilityShortText) {
     deterministicFindings.push({
-      whatDetected: `Short text sample (${stylometry.wordCount} words, ${stylometry.sentenceCount} sentence(s))`,
+      whatDetected: `Ultra-short snippet (${stylometry.wordCount} words, ${stylometry.sentenceCount} sentence(s))`,
       whereDetected: filename,
       whyFlagged:
-        'Texts under 60 words or 3 sentences lack enough statistical structure to distinguish human writing from AI generation reliably.',
+        'Snippets under 15 words have minimal statistical structure, so detection relies on phrasing cues.',
       analysisMethod: 'Statistical Text Reliability Guard',
-      confidence: 35,
+      confidence: 45,
       limitations:
-        'Short snippets, headlines, paraphrased text, and heavily edited drafts produce high false-positive/false-negative rates.',
+        'Very short fragments can be ambiguous without surrounding paragraph context.',
       classification: 'Inconclusive',
       regionJson: null,
     });
@@ -163,7 +178,7 @@ export async function analyzeTextEvidence(params: {
 
   try {
     const sampleText = trimmed.slice(0, 24000);
-    const promptText = `Analyze this text (${filename}, ${stylometry.wordCount} words, ${stylometry.sentenceCount} sentences) for BOTH AI-generated authorship signals AND internal/contextual inconsistencies.
+    const promptText = `Analyze this text (${filename}, ${stylometry.wordCount} words, ${stylometry.sentenceCount} sentences) for AI-generated authorship signals, LLM phrasing patterns, and internal/contextual inconsistencies.
 ${caseDescription ? `Context / accompanying media notes: "${caseDescription}"\n` : ''}
 Computed Deterministic Stylometric Metrics:
 ${JSON.stringify(stylometry)}
@@ -174,11 +189,14 @@ ${sampleText}
 """
 
 Tasks:
-1. Evaluate linguistic predictability, uniform sentence structure (low burstiness), repetitive phrasing/transitions, generic tone, semantic consistency, and any contradictions against context notes.
-2. Attempt to distinguish: "HUMAN-WRITTEN", "AI-GENERATED", "AI-ASSISTED" (mixed/edited), or "INCONCLUSIVE".
-3. IMPORTANT RELIABILITY RULE: If the text is very short (< 60 words / < 3 sentences), heavily paraphrased, formulaic boilerplate (like legal/invoice templates), or ambiguous, prefer "INCONCLUSIVE" and state clearly that AI text detection cannot be guaranteed on short or edited text.
-4. Set "aiProbability" (0-100) and calibrated "confidence" (0-100).
-5. Quote exact short excerpts for key linguistic or contradiction findings, and write "technicalSummary" in 2-3 clear, plain-English sentences.`;
+1. Evaluate linguistic predictability (low perplexity / safe default next-token phrasing), generic LLM politeness/template formulas (e.g., "I hope you're doing well", "regarding an important matter", "look forward to your response", "thank you for your time and consideration", or formal essay transitions), uniform cadence, lack of concrete personal/situational details, and any contradictions against context notes.
+2. Classify into one of:
+   - "AI-GENERATED" (aiProbability 65-98): Strong LLM phrasing, generic template smoothness, predictable structure, or absence of authentic human specificity—even in short 1-paragraph emails, captions, or statements.
+   - "AI-ASSISTED" (aiProbability 42-64): Mixed AI structure with human edits or moderate template overlap.
+   - "HUMAN-WRITTEN" (aiProbability 2-39): Natural human voice, concrete details, idiosyncratic rhythm, or organic imperfections.
+   - "INCONCLUSIVE" (aiProbability 40-60): Use ONLY when the text is genuinely ambiguous or an ultra-short fragment (< 15 words) with no clear cues either way. Do NOT default a clear AI-written paragraph to "INCONCLUSIVE" just because it is under 60 words.
+3. Set "aiProbability" (0-100) and calibrated "confidence" (0-100).
+4. Quote exact short excerpts from the text for key findings, and write "technicalSummary" in 2-3 clear, plain-English sentences.`;
 
     const responseSchema = {
       type: Type.OBJECT,
@@ -205,32 +223,32 @@ Tasks:
       },
     };
     const sysPrompt =
-      'You are a fast computational linguistics and AI text detection specialist. Analyze stylometry, predictability, sentence variance, repetition, and semantic consistency honestly. Never claim 100% certainty on text detection—explicitly note short-text, paraphrasing, and human-editing limitations.';
+      'You are an expert computational linguistics and AI-authorship forensics analyst. Accurately distinguish authentic human writing from LLM-generated paragraphs, emails, essays, and transcripts by inspecting token predictability, generic template clichés, specificity vs. vagueness, and sentence cadence. Never falsely downgrade a clear AI-generated paragraph to Inconclusive solely for being a single paragraph.';
 
-    let usedModel = GEMINI_FAST_MODEL;
+    let usedModel = GEMINI_MODEL;
     let response;
     try {
       response = await withRetry(
         (abortSignal) =>
           ai.models.generateContent({
-            model: GEMINI_FAST_MODEL,
+            model: GEMINI_MODEL,
             contents: promptText,
             config: {
               abortSignal,
-              thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
               systemInstruction: sysPrompt,
               responseMimeType: 'application/json',
               responseSchema,
             },
           }),
-        { maxRetries: 0, timeoutMs: 14_000, label: 'Fast text check' }
+        { maxRetries: 1, timeoutMs: 22_000, label: 'Primary AI text detection' }
       );
     } catch {
-      usedModel = GEMINI_MODEL;
+      usedModel = GEMINI_FAST_MODEL;
       response = await withRetry(
         (abortSignal) =>
           ai.models.generateContent({
-            model: GEMINI_MODEL,
+            model: GEMINI_FAST_MODEL,
             contents: promptText,
             config: {
               abortSignal,
@@ -240,12 +258,20 @@ Tasks:
               responseSchema,
             },
           }),
-        { maxRetries: 1, timeoutMs: 20_000, label: 'Text check' }
+        { maxRetries: 0, timeoutMs: 14_000, label: 'Fallback AI text detection' }
       );
     }
 
     const parsed = parseGeminiJson<any>(response.text);
     const rawLabel = String(parsed.detectionLabel || '').toUpperCase();
+    let aiProbability = Math.max(0, Math.min(100, Math.round(Number(parsed.aiProbability ?? 50))));
+    let confidence = Math.max(0, Math.min(100, Math.round(Number(parsed.confidence ?? 65))));
+
+    // Reconcile deterministic AI phrase hits with LLM score if text matches multiple strong LLM clichés
+    if (stylometry.aiPhraseHits.length >= 2 && aiProbability < 68) {
+      aiProbability = Math.max(aiProbability, Math.min(84, 58 + stylometry.aiPhraseHits.length * 8));
+    }
+
     let detectionLabel: TextDetectionLabel =
       rawLabel === 'AI-GENERATED'
         ? 'AI-GENERATED'
@@ -255,14 +281,16 @@ Tasks:
         ? 'HUMAN-WRITTEN'
         : 'INCONCLUSIVE';
 
-    // Guard short text against overconfident classification
-    const aiProbability = Math.max(0, Math.min(100, Math.round(Number(parsed.aiProbability ?? 50))));
-    let confidence = Math.max(0, Math.min(100, Math.round(Number(parsed.confidence ?? 55))));
-    if (stylometry.lowReliabilityShortText && confidence > 55) {
-      confidence = 45;
-      if (detectionLabel === 'AI-GENERATED' || detectionLabel === 'HUMAN-WRITTEN') {
-        detectionLabel = 'INCONCLUSIVE';
-      }
+    // Ensure probability and label stay consistent
+    if (aiProbability >= 65 && detectionLabel === 'INCONCLUSIVE') {
+      detectionLabel = 'AI-GENERATED';
+    } else if (aiProbability <= 32 && detectionLabel === 'INCONCLUSIVE' && !stylometry.lowReliabilityShortText) {
+      detectionLabel = 'HUMAN-WRITTEN';
+    }
+
+    // Only apply a mild confidence ceiling on ultra-short (<15 word) fragments
+    if (stylometry.lowReliabilityShortText && confidence > 70) {
+      confidence = 65;
     }
 
     const classification: ForensicClassification =
@@ -288,7 +316,7 @@ Tasks:
           confidence: Math.max(0, Math.min(100, Number(f.confidence ?? confidence))),
           limitations: String(
             f.limitations ||
-              'Text detection cannot reliably prove authorship on short passages, paraphrased text, or human-edited AI drafts.'
+              'Linguistic AI detection provides probabilistic indicators; heavily paraphrased or human-edited drafts can blur boundaries.'
           ),
           classification: validClassifications.includes(f.classification)
             ? f.classification

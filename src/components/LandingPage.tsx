@@ -1,293 +1,436 @@
 import {
   ArrowLeftRight,
   ArrowRight,
-  AudioLines,
-  CheckCircle2,
-  ChevronRight,
+  Check,
   Columns2,
-  FileSearch,
+  Copy,
+  FileCheck2,
   FileText,
-  Film,
+  Fingerprint,
   Image as ImageIcon,
-  Layers,
   LogIn,
   LogOut,
-  ShieldAlert,
+  RotateCcw,
   UploadCloud,
 } from 'lucide-react';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
-import { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { ThemeToggle } from '../context/ThemeContext';
+import { analyzeTextStylometry } from '../services/signal/stylometry';
 
-type DemoMode = 'photo' | 'compare' | 'video' | 'voice' | 'text';
+type ToolTab = 'precheck' | 'text' | 'compare';
 
-const DEMO_TABS: Array<{ id: DemoMode; label: string; icon: typeof ImageIcon }> = [
-  { id: 'photo', label: 'Photo', icon: ImageIcon },
-  { id: 'compare', label: 'Compare', icon: Columns2 },
-  { id: 'video', label: 'Video', icon: Film },
-  { id: 'voice', label: 'Voice', icon: AudioLines },
-  { id: 'text', label: 'Text', icon: FileText },
+const TOOL_TABS: Array<{ id: ToolTab; label: string; icon: typeof UploadCloud }> = [
+  { id: 'precheck', label: 'Pre-Check File', icon: UploadCloud },
+  { id: 'text', label: 'Live Text Check', icon: FileText },
+  { id: 'compare', label: 'Compare Photos', icon: Columns2 },
 ];
 
-const WORKFLOW_STEPS = [
-  {
-    id: 'upload',
-    step: '01',
-    title: 'Upload files or paste text',
-    detail:
-      'Drop photos, videos, audio clips, or documents into a case—or stage a real photo next to a suspicious one.',
-    icon: UploadCloud,
-  },
-  {
-    id: 'signals',
-    step: '02',
-    title: 'Analyze content signals directly',
-    detail:
-      'Inspects 2D-FFT frequencies, pixel noise, temporal frame consistency, spectrograms, and stylometry even without metadata.',
-    icon: Layers,
-  },
-  {
-    id: 'report',
-    step: '03',
-    title: 'Review clear results & PDF',
-    detail:
-      'Explore highlighted regions, timelines, confidence scores, and honest limitations, then download a structured PDF report.',
-    icon: FileSearch,
-  },
-];
+const SAMPLE_AI_TEXT =
+  'Furthermore, the seamless integration of emerging technologies underscores the importance of establishing robust governance frameworks. Moreover, it is worth noting that stakeholders must delve into holistic strategies across this ever-evolving landscape.';
 
-const VERDICT_ITEMS = [
-  {
-    id: 'suspicious',
-    label: 'Suspicious',
-    tone: 'text-amber-300',
-    summary: 'Clear synthetic artifacts, editing seams, or cross-file mismatches found.',
-  },
-  {
-    id: 'normal',
-    label: 'Looks Normal',
-    tone: 'text-emerald-300',
-    summary: 'Natural camera, motion, voice, or writing patterns with no clear manipulation.',
-  },
-  {
-    id: 'inconclusive',
-    label: 'Inconclusive',
-    tone: 'text-sky-300',
-    summary: 'Signals are mixed or degraded by heavy social compression; human review advised.',
-  },
-  {
-    id: 'unavailable',
-    label: 'Analysis Unavailable',
-    tone: 'text-slate-300',
-    summary: 'Shown transparently if a check step fails instead of guessing a score.',
-  },
-];
+const SAMPLE_HUMAN_TEXT =
+  'Honestly, the draft still feels rushed—we cut two charts before noon because Tuesday’s camera timestamps did not match. Leave the raw notes below so Sam can check the files before 4 PM.';
 
-const WAVE_BARS = [24, 52, 38, 78, 64, 42, 88, 70, 32, 60, 84, 48, 36, 72, 54, 30];
+async function computeSha256Hex(buffer: ArrayBuffer): Promise<string> {
+  if (!crypto?.subtle) return 'Unavailable in this browser context';
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+interface PrecheckInfo {
+  filename: string;
+  sizeLabel: string;
+  mime: string;
+  sha256: string;
+  kind: 'image' | 'audio' | 'text' | 'other';
+  dimensions?: string;
+  durationSec?: number;
+  waveformPeaks?: number[];
+  previewUrl?: string;
+  extractedPreview?: string;
+}
 
 export function LandingPage({
   onEnterWorkspace,
 }: {
   onEnterWorkspace: () => void;
 }) {
-  const { user, signInWithGoogle, logout, authError } = useAuth();
-  const [signingIn, setSigningIn] = useState(false);
+  const { user, signInWithGoogle, signUpWithGoogle, logout, authError } = useAuth();
+  const [signingIn, setSigningIn] = useState<'signin' | 'signup' | null>(null);
+  const [activeTab, setActiveTab] = useState<ToolTab>('precheck');
 
-  // Interactive preview states
-  const [demoMode, setDemoMode] = useState<DemoMode>('photo');
-  const [showHeatmapOverlay, setShowHeatmapOverlay] = useState(false);
-  const [compareSlider, setCompareSlider] = useState(52);
-  const [videoFrameIdx, setVideoFrameIdx] = useState(1);
-  const [activeWaveBar, setActiveWaveBar] = useState(6);
-  const [textSample, setTextSample] = useState<'human' | 'ai'>('ai');
+  // Tool 1: Real Client-Side File Pre-Check (SHA-256, dimensions, audio decode, text read)
+  const [dragActive, setDragActive] = useState(false);
+  const [prechecking, setPrechecking] = useState(false);
+  const [precheck, setPrecheck] = useState<PrecheckInfo | null>(null);
+  const [copiedHash, setCopiedHash] = useState(false);
 
-  // Compact interactive guide states
-  const [activeStep, setActiveStep] = useState(0);
-  const [openVerdict, setOpenVerdict] = useState<string>('suspicious');
+  // Tool 2: Real Live Text Stylometry (powered by analyzeTextStylometry)
+  const [liveText, setLiveText] = useState<string>('');
 
-  // Image error fallbacks
-  const [opticalImgError, setOpticalImgError] = useState(false);
-  const [heroImgError, setHeroImgError] = useState(false);
-  const [audioImgError, setAudioImgError] = useState(false);
+  // Tool 3: Real Interactive Two-Photo Split Comparator
+  const [photoA, setPhotoA] = useState<{ name: string; url: string } | null>(null);
+  const [photoB, setPhotoB] = useState<{ name: string; url: string } | null>(null);
+  const [splitPos, setSplitPos] = useState<number>(50);
+  const [draggingSplit, setDraggingSplit] = useState<boolean>(false);
+  const splitBoxRef = useRef<HTMLDivElement | null>(null);
 
-  const handleGetStarted = async () => {
+  const stylometry = useMemo(() => analyzeTextStylometry(liveText), [liveText]);
+
+  const handleFilePrecheck = async (file: File) => {
+    setPrechecking(true);
+    setCopiedHash(false);
+    try {
+      const buf = await file.arrayBuffer();
+      const sha256 = await computeSha256Hex(buf);
+      const sizeLabel =
+        file.size >= 1024 * 1024
+          ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
+          : `${Math.max(1, Math.round(file.size / 1024))} KB`;
+
+      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|gif)$/i.test(file.name)) {
+        const previewUrl = URL.createObjectURL(file);
+        const dimensions = await new Promise<string>((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(`${img.naturalWidth} × ${img.naturalHeight} px`);
+          img.onerror = () => resolve('Dimensions unreadable');
+          img.src = previewUrl;
+        });
+        setPrecheck((prev) => {
+          if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+          return {
+            filename: file.name,
+            sizeLabel,
+            mime: file.type || 'image',
+            sha256,
+            kind: 'image',
+            dimensions,
+            previewUrl,
+          };
+        });
+      } else if (file.type.startsWith('audio/') || /\.(mp3|wav|m4a|ogg)$/i.test(file.name)) {
+        const previewUrl = URL.createObjectURL(file);
+        let durationSec = 0;
+        const waveformPeaks: number[] = [];
+        try {
+          const AudioCtx =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+          if (AudioCtx) {
+            const ctx = new AudioCtx();
+            const decoded = await ctx.decodeAudioData(buf.slice(0));
+            durationSec = Number(decoded.duration.toFixed(2));
+            const chan = decoded.getChannelData(0);
+            const bucket = Math.max(1, Math.floor(chan.length / 24));
+            for (let i = 0; i < 24; i++) {
+              let maxVal = 0;
+              const start = i * bucket;
+              const end = Math.min(chan.length, start + bucket);
+              for (let j = start; j < end; j++) {
+                const v = Math.abs(chan[j]);
+                if (v > maxVal) maxVal = v;
+              }
+              waveformPeaks.push(Math.max(10, Math.min(100, Math.round(maxVal * 100))));
+            }
+            void ctx.close().catch(() => {});
+          }
+        } catch {
+          // Audio decode failed in browser; playback element still renders
+        }
+        setPrecheck((prev) => {
+          if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+          return {
+            filename: file.name,
+            sizeLabel,
+            mime: file.type || 'audio',
+            sha256,
+            kind: 'audio',
+            durationSec,
+            waveformPeaks,
+            previewUrl,
+          };
+        });
+      } else if (
+        file.type.startsWith('text/') ||
+        /\.(txt|md|csv|json|log)$/i.test(file.name)
+      ) {
+        const text = new TextDecoder().decode(buf);
+        setPrecheck((prev) => {
+          if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+          return {
+            filename: file.name,
+            sizeLabel,
+            mime: file.type || 'text/plain',
+            sha256,
+            kind: 'text',
+            extractedPreview: text.slice(0, 600),
+          };
+        });
+        setLiveText(text.slice(0, 8000));
+      } else {
+        setPrecheck((prev) => {
+          if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+          return {
+            filename: file.name,
+            sizeLabel,
+            mime: file.type || 'document/media',
+            sha256,
+            kind: 'other',
+          };
+        });
+      }
+    } finally {
+      setPrechecking(false);
+    }
+  };
+
+  const handleCompareUpload = (slot: 'a' | 'b', file: File) => {
+    if (!file.type.startsWith('image/') && !/\.(jpe?g|png|webp)$/i.test(file.name)) return;
+    const url = URL.createObjectURL(file);
+    if (slot === 'a') {
+      setPhotoA((prev) => {
+        if (prev?.url) URL.revokeObjectURL(prev.url);
+        return { name: file.name, url };
+      });
+    } else {
+      setPhotoB((prev) => {
+        if (prev?.url) URL.revokeObjectURL(prev.url);
+        return { name: file.name, url };
+      });
+    }
+  };
+
+  const updateSplitFromPointer = (clientX: number) => {
+    if (!splitBoxRef.current) return;
+    const rect = splitBoxRef.current.getBoundingClientRect();
+    const pct = Math.max(5, Math.min(95, Math.round(((clientX - rect.left) / rect.width) * 100)));
+    setSplitPos(pct);
+  };
+
+  const handleCopyHash = async (hash: string) => {
+    try {
+      await navigator.clipboard.writeText(hash);
+      setCopiedHash(true);
+      setTimeout(() => setCopiedHash(false), 1800);
+    } catch {
+      // clipboard denied
+    }
+  };
+
+  const handleGoogleAuth = async (mode: 'signin' | 'signup') => {
     if (user) {
       onEnterWorkspace();
       return;
     }
-    setSigningIn(true);
+    setSigningIn(mode);
     try {
-      await signInWithGoogle();
+      if (mode === 'signup') {
+        await signUpWithGoogle();
+      } else {
+        await signInWithGoogle();
+      }
       onEnterWorkspace();
     } catch {
       // authError handled in context
     } finally {
-      setSigningIn(false);
+      setSigningIn(null);
     }
+  };
+
+  const renderHighlightedPhrases = () => {
+    const trimmed = liveText.trim();
+    if (!trimmed) {
+      return (
+        <span className="text-slate-400 dark:text-slate-500">
+          Paste or type text above to inspect phrasing patterns, sentence variance, and word diversity in real time.
+        </span>
+      );
+    }
+    if (stylometry.aiPhraseHits.length === 0) {
+      return <span>No common template transition phrases detected in this text.</span>;
+    }
+    const pattern = new RegExp(
+      `(${stylometry.aiPhraseHits
+        .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|')})`,
+      'gi'
+    );
+    return trimmed.split(pattern).map((part, idx) => {
+      const hit = stylometry.aiPhraseHits.some((p) => p.toLowerCase() === part.toLowerCase());
+      return hit ? (
+        <mark
+          key={idx}
+          className="rounded bg-rose-100 px-1 font-medium text-rose-800 dark:bg-rose-500/25 dark:text-rose-200"
+        >
+          {part}
+        </mark>
+      ) : (
+        <React.Fragment key={idx}>{part}</React.Fragment>
+      );
+    });
   };
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="flex min-h-screen flex-col bg-[#0B1120] text-[#F8FAFC]">
-        {/* Top Bar Contract: Brand — Concise Nav — Actions */}
-        <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#0B1120]/90 backdrop-blur-md">
-          <div className="mx-auto flex max-w-[1240px] items-center justify-between gap-8 px-6 py-4">
-            <span className="text-lg font-bold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
+      <div className="flex min-h-screen flex-col bg-[#F8FAFC] text-slate-900 dark:bg-[#0B1120] dark:text-slate-100 transition-colors duration-200">
+        {/* Clean Navbar: TruthLens on left, Light/Dark + Google Sign-In on right */}
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-[#0B1120]/95">
+          <div className="mx-auto flex max-w-[1280px] items-center justify-between gap-4 px-6 py-3.5">
+            <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap shrink-0">
               TruthLens
             </span>
 
-            <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-400">
-              <a
-                href="#preview"
-                className="hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-              >
-                Preview
-              </a>
-              <a
-                href="#workflow"
-                className="hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-              >
-                How It Works
-              </a>
-              <a
-                href="#verdicts"
-                className="hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-              >
-                Verdicts
-              </a>
-            </nav>
-
-            <div className="flex items-center gap-3 shrink-0">
-              {user ? (
-                <button
-                  type="button"
-                  onClick={() => void logout()}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#11192B] px-3.5 py-2 text-xs font-medium text-slate-200 hover:border-slate-500 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <LogOut className="h-3.5 w-3.5 text-slate-400" />
-                  <span>Log out</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleGetStarted}
-                  disabled={signingIn}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#11192B] px-3.5 py-2 text-xs font-medium text-slate-200 hover:border-sky-500 hover:text-white transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
-                >
-                  <LogIn className="h-3.5 w-3.5 text-sky-400" />
-                  <span>{signingIn ? 'Signing in...' : 'Log in'}</span>
-                </button>
-              )}
-
+            <div className="flex items-center gap-2.5 shrink-0">
+              <ThemeToggle />
               <button
                 type="button"
-                onClick={handleGetStarted}
-                disabled={signingIn}
-                className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
+                onClick={() => void handleGoogleAuth(user ? 'signin' : 'signup')}
+                disabled={signingIn !== null}
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white shadow-2xs hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
               >
-                <span>{user ? 'Open Workspace' : signingIn ? 'Signing in...' : 'Get Started'}</span>
+                <span>
+                  {user
+                    ? 'Open Workspace'
+                    : signingIn !== null
+                    ? 'Connecting...'
+                    : 'Sign in with Google'}
+                </span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1240px] flex-1 px-6">
-          {/* Hero + Interactive Verification Showcase */}
-          <section
-            id="preview"
-            className="grid grid-cols-1 items-center gap-10 py-12 lg:grid-cols-12 lg:py-16"
-          >
+        <main className="mx-auto flex w-full max-w-[1280px] flex-1 items-center px-6 py-10 lg:py-14">
+          <section className="grid w-full grid-cols-1 items-center gap-10 lg:grid-cols-12">
+            {/* Hero Left: Clear Purpose + Quick Tool Selection + Google Auth */}
             <motion.div
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-              className="lg:col-span-5"
+              className="lg:col-span-5 space-y-6"
             >
-              <p className="text-xs font-medium tracking-wide text-sky-400">
-                Multimodal Verification
-              </p>
-              <h1
-                className="mt-3 font-bold tracking-tight text-slate-50"
-                style={{
-                  fontSize: 'clamp(2.2rem, 3.6vw, 3.15rem)',
-                  lineHeight: 1.08,
-                  textWrap: 'balance',
-                }}
-              >
-                Check photos, video, voice, and text before you trust them.
-              </h1>
-              <p className="mt-4 max-w-md text-sm leading-relaxed text-slate-300">
-                Inspect pixel frequencies, video frames, voice patterns, and text—or compare a suspicious photo against a real one, even without watermarks.
-              </p>
+              <div>
+                <p className="font-mono text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-sky-400">
+                  Multimodal Digital Forensics
+                </p>
+                <h1
+                  className="mt-2.5 font-bold tracking-tight text-slate-900 dark:text-slate-50"
+                  style={{
+                    fontSize: 'clamp(2.25rem, 3.6vw, 3.15rem)',
+                    lineHeight: 1.08,
+                    textWrap: 'balance',
+                  }}
+                >
+                  Verify photos, voice, video, and text before you trust them.
+                </h1>
+                <p className="mt-3.5 max-w-md text-[15px] leading-relaxed text-slate-600 dark:text-slate-300">
+                  Pre-check file hashes, measure live writing stylometry, or slide-compare two photos right in your browser—then sign in for 2D-FFT spectral checks, deepfake screening, and PDF reports.
+                </p>
+              </div>
 
-              <div className="mt-7 flex flex-wrap items-center gap-3">
+              {/* Interactive Tool Selector Buttons */}
+              <div className="flex flex-wrap gap-2">
+                {TOOL_TABS.map((tab) => {
+                  const Icon = tab.icon;
+                  const active = activeTab === tab.id;
+                  return (
+                    <motion.button
+                      key={tab.id}
+                      type="button"
+                      whileHover={{ y: -1 }}
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        active
+                          ? 'border-blue-600 bg-blue-700 text-white dark:border-sky-400 dark:bg-sky-500 dark:text-slate-950'
+                          : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300 dark:border-slate-800 dark:bg-[#11192B] dark:text-slate-200 dark:hover:border-sky-500/60'
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      <span>{tab.label}</span>
+                    </motion.button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
                 <button
                   type="button"
-                  onClick={handleGetStarted}
-                  disabled={signingIn}
-                  className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-sky-400 active:scale-[0.98] transition-all disabled:opacity-60 whitespace-nowrap shrink-0"
+                  onClick={() => void handleGoogleAuth('signup')}
+                  disabled={signingIn !== null}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-xs hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 active:scale-[0.98] transition-all disabled:opacity-60 whitespace-nowrap shrink-0"
                 >
                   <span>
-                    {user ? 'Open Workspace' : signingIn ? 'Connecting Google...' : 'Get Started'}
+                    {user
+                      ? 'Open Workspace'
+                      : signingIn === 'signup'
+                      ? 'Creating Account...'
+                      : 'Sign up with Google'}
                   </span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
 
-                {!user && (
+                {user ? (
                   <button
                     type="button"
-                    onClick={handleGetStarted}
-                    disabled={signingIn}
-                    className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-[#11192B] px-5 py-3 text-sm font-medium text-slate-200 hover:border-sky-500 hover:text-white active:scale-[0.98] transition-all disabled:opacity-60 whitespace-nowrap shrink-0"
+                    onClick={() => void logout()}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#11192B] dark:text-slate-200 dark:hover:bg-slate-800 active:scale-[0.98] transition-all whitespace-nowrap shrink-0"
                   >
-                    <LogIn className="h-4 w-4 text-sky-400" />
-                    <span>Log in with Google</span>
+                    <LogOut className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+                    <span>Sign out</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleGoogleAuth('signin')}
+                    disabled={signingIn !== null}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700 hover:border-blue-300 hover:text-blue-700 dark:border-slate-700 dark:bg-[#11192B] dark:text-slate-200 dark:hover:border-sky-500/60 dark:hover:text-sky-300 active:scale-[0.98] transition-all disabled:opacity-60 whitespace-nowrap shrink-0"
+                  >
+                    <LogIn className="h-4 w-4 text-blue-700 dark:text-sky-400" />
+                    <span>{signingIn === 'signin' ? 'Signing in...' : 'Sign in'}</span>
                   </button>
                 )}
               </div>
 
-              {authError && <p className="mt-3 text-xs text-rose-400">{authError}</p>}
-
-              <div className="mt-7 flex flex-wrap items-center gap-2 text-xs text-slate-400 font-mono">
-                <span>JPG · PNG · WEBP</span>
-                <span aria-hidden="true">/</span>
-                <span>MP4 · MOV</span>
-                <span aria-hidden="true">/</span>
-                <span>MP3 · WAV</span>
-                <span aria-hidden="true">/</span>
-                <span>PDF · DOCX · TXT</span>
-              </div>
+              {authError && (
+                <p className="text-xs font-medium text-rose-700 dark:text-rose-400">{authError}</p>
+              )}
             </motion.div>
 
-            {/* Interactive Animated Preview Console */}
+            {/* Right: Real Functional Browser Tools (No Mock Cards / No Fake Telemetry Blocks) */}
             <motion.div
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.45, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: 0.42, delay: 0.06, ease: [0.16, 1, 0.3, 1] }}
               className="lg:col-span-7"
             >
-              <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#11192B]">
-                {/* Mode Switcher */}
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-                  <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-[#0B1120] p-1">
-                    {DEMO_TABS.map((tab) => {
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-[#11192B]">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+                  <div className="flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-800 dark:bg-[#0B1120]">
+                    {TOOL_TABS.map((tab) => {
                       const Icon = tab.icon;
-                      const active = demoMode === tab.id;
+                      const active = activeTab === tab.id;
                       return (
                         <button
                           key={tab.id}
                           type="button"
-                          onClick={() => setDemoMode(tab.id)}
-                          className={`relative inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                            active ? 'text-slate-950' : 'text-slate-400 hover:text-slate-100'
+                          onClick={() => setActiveTab(tab.id)}
+                          className={`relative inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                            active
+                              ? 'text-white dark:text-slate-950'
+                              : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
                           }`}
                         >
                           {active && (
                             <motion.span
-                              layoutId="landing-demo-pill"
-                              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
-                              className="absolute inset-0 rounded-md bg-sky-500"
+                              layoutId="landing-tool-pill"
+                              transition={{ type: 'spring', stiffness: 450, damping: 32 }}
+                              className="absolute inset-0 rounded-md bg-blue-700 dark:bg-sky-400"
                             />
                           )}
                           <Icon className="relative z-10 h-3.5 w-3.5" />
@@ -297,334 +440,421 @@ export function LandingPage({
                     })}
                   </div>
 
-                  <span className="text-[11px] text-slate-400 whitespace-nowrap">
-                    Interactive preview
+                  <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                    Runs Locally in Browser
                   </span>
                 </div>
 
-                {/* Animated Viewport */}
-                <div className="p-4">
+                <div className="p-5">
                   <AnimatePresence mode="wait">
-                    {demoMode === 'photo' && (
+                    {/* 1. REAL CLIENT-SIDE FILE PRE-CHECK & SHA-256 HASHER */}
+                    {activeTab === 'precheck' && (
                       <motion.div
-                        key="photo"
+                        key="precheck"
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-3"
+                        transition={{ duration: 0.2 }}
+                        className="space-y-4"
                       >
-                        <div className="relative aspect-[16/9] overflow-hidden rounded-lg border border-slate-800 bg-[#0B1120]">
-                          {!opticalImgError ? (
-                            <img
-                              src="/src/assets/images/capability_optical_sensor_1795076459010.jpg"
-                              alt="Photo inspection preview"
-                              referrerPolicy="no-referrer"
-                              onError={() => setOpticalImgError(true)}
-                              className={`h-full w-full object-cover transition-all duration-300 ${
-                                showHeatmapOverlay ? 'contrast-150 saturate-150 brightness-90' : ''
-                              }`}
-                            />
-                          ) : (
-                            <div className="flex h-full items-center justify-center bg-[#161F33]">
-                              <ImageIcon className="h-9 w-9 text-sky-400" />
-                            </div>
-                          )}
-
-                          {/* Subtle animated scanner sweep (compositor transform only) */}
-                          <motion.div
-                            aria-hidden="true"
-                            initial={{ y: '-10%' }}
-                            animate={{ y: '105%' }}
-                            transition={{
-                              duration: 3.4,
-                              repeat: Infinity,
-                              ease: 'linear',
+                        {!precheck ? (
+                          <label
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              setDragActive(true);
                             }}
-                            className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-transparent via-sky-400/20 to-transparent"
-                          />
+                            onDragLeave={() => setDragActive(false)}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setDragActive(false);
+                              const f = e.dataTransfer.files?.[0];
+                              if (f) void handleFilePrecheck(f);
+                            }}
+                            className={`flex min-h-[290px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-colors ${
+                              dragActive
+                                ? 'border-blue-600 bg-blue-50/70 dark:border-sky-400 dark:bg-sky-500/10'
+                                : 'border-slate-300 bg-slate-50 hover:border-blue-400 dark:border-slate-700 dark:bg-[#0B1120] dark:hover:border-sky-500/60'
+                            }`}
+                          >
+                            <motion.div
+                              animate={{
+                                scale: dragActive ? 1.08 : [1, 1.04, 1],
+                                y: dragActive ? -4 : 0,
+                              }}
+                              transition={
+                                dragActive
+                                  ? { duration: 0.2 }
+                                  : { duration: 2.6, repeat: Infinity, ease: 'easeInOut' }
+                              }
+                              className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-50 text-blue-700 dark:bg-sky-500/15 dark:text-sky-400"
+                            >
+                              <UploadCloud className="h-7 w-7" />
+                            </motion.div>
 
-                          {/* Scrim for readable overlay controls */}
-                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
+                            <p className="mt-4 text-base font-bold text-slate-900 dark:text-slate-100">
+                              {prechecking
+                                ? 'Hashing & reading file...'
+                                : 'Drop any photo, audio, video, or text file'}
+                            </p>
+                            <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                              Instantly generates a cryptographic SHA-256 fingerprint, verifies resolution or audio duration, and previews decoded media before uploading.
+                            </p>
 
-                          <div className="absolute inset-x-3 bottom-3 flex items-center justify-between gap-3">
-                            <span className="text-xs text-slate-200">
-                              {showHeatmapOverlay
-                                ? 'Edit & compression residual overlay active'
-                                : '2D-FFT spectrum & pixel noise inspection'}
+                            <span className="mt-5 inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white dark:bg-sky-500 dark:text-slate-950">
+                              Choose File from Device
                             </span>
+                            <input
+                              type="file"
+                              accept=".jpg,.jpeg,.png,.webp,.gif,.mp3,.wav,.m4a,.ogg,.mp4,.mov,.txt,.md,.csv,.pdf,.docx"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) void handleFilePrecheck(f);
+                                e.target.value = '';
+                              }}
+                            />
+                          </label>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="flex items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-[#0B1120]">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 dark:bg-sky-500/15 dark:text-sky-400">
+                                  <FileCheck2 className="h-5 w-5" />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-bold text-slate-900 dark:text-slate-100">
+                                    {precheck.filename}
+                                  </p>
+                                  <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                                    {precheck.sizeLabel} · {precheck.mime}
+                                    {precheck.dimensions ? ` · ${precheck.dimensions}` : ''}
+                                    {precheck.durationSec ? ` · ${precheck.durationSec}s` : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => setPrecheck(null)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 dark:border-slate-700 dark:bg-[#11192B] dark:text-slate-300 shrink-0"
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                <span>Reset</span>
+                              </button>
+                            </div>
+
+                            {/* Real SHA-256 Digest with Copy */}
+                            <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 dark:border-slate-800 dark:bg-[#0B1120]">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase text-slate-400">
+                                  <Fingerprint className="h-3.5 w-3.5 text-blue-700 dark:text-sky-400" />
+                                  <span>SHA-256 Integrity Digest</span>
+                                </div>
+                                <p className="mt-0.5 truncate font-mono text-xs text-slate-800 dark:text-slate-200">
+                                  {precheck.sha256}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void handleCopyHash(precheck.sha256)}
+                                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-[#11192B] dark:text-slate-200 shrink-0"
+                              >
+                                {copiedHash ? (
+                                  <>
+                                    <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                                    <span>Copied</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="h-3 w-3" />
+                                    <span>Copy</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+
+                            {precheck.kind === 'image' && precheck.previewUrl && (
+                              <div className="overflow-hidden rounded-xl border border-slate-200 bg-[#0F172A] dark:border-slate-800">
+                                <img
+                                  src={precheck.previewUrl}
+                                  alt={precheck.filename}
+                                  className="mx-auto max-h-48 w-full object-contain"
+                                />
+                              </div>
+                            )}
+
+                            {precheck.kind === 'audio' && precheck.previewUrl && (
+                              <div className="space-y-3 rounded-xl border border-slate-800 bg-[#0F172A] p-4">
+                                {precheck.waveformPeaks && precheck.waveformPeaks.length > 0 && (
+                                  <div className="flex h-16 items-end gap-1.5">
+                                    {precheck.waveformPeaks.map((p, idx) => (
+                                      <motion.span
+                                        key={idx}
+                                        initial={{ scaleY: 0 }}
+                                        animate={{ scaleY: 1 }}
+                                        transition={{ duration: 0.25, delay: idx * 0.02 }}
+                                        style={{ height: `${p}%`, transformOrigin: 'bottom' }}
+                                        className="flex-1 rounded-t bg-sky-400"
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                                <audio src={precheck.previewUrl} controls className="w-full" />
+                              </div>
+                            )}
+
+                            {precheck.kind === 'text' && precheck.extractedPreview && (
+                              <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs dark:border-slate-800 dark:bg-[#0B1120]">
+                                <span className="text-slate-600 dark:text-slate-300">
+                                  Loaded text into the Live Stylometry tab.
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveTab('text')}
+                                  className="font-semibold text-blue-700 hover:underline dark:text-sky-400"
+                                >
+                                  Inspect Stylometry →
+                                </button>
+                              </div>
+                            )}
+
                             <button
                               type="button"
-                              onClick={() => setShowHeatmapOverlay((v) => !v)}
-                              className="rounded-md border border-slate-600 bg-[#0B1120]/90 px-3 py-1.5 text-xs font-medium text-sky-300 hover:border-sky-400 transition-colors whitespace-nowrap shrink-0"
+                              onClick={() => void handleGoogleAuth(user ? 'signin' : 'signup')}
+                              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors"
                             >
-                              {showHeatmapOverlay ? 'View Original' : 'Toggle Heatmap'}
+                              <span>
+                                {user
+                                  ? 'Open Workspace for Full Server Scan & PDF'
+                                  : 'Sign in with Google to Run Full Forensic Scan & PDF'}
+                              </span>
+                              <ArrowRight className="h-3.5 w-3.5" />
                             </button>
                           </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                          <span>Checks pixels &amp; frequency domain without needing EXIF</span>
-                          <span className="font-mono tabular-nums text-emerald-300">
-                            Sample: Real Photo · 94% Confidence
-                          </span>
-                        </div>
+                        )}
                       </motion.div>
                     )}
 
-                    {demoMode === 'compare' && (
-                      <motion.div
-                        key="compare"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-3"
-                      >
-                        <div className="relative aspect-[16/9] overflow-hidden rounded-lg border border-slate-800 bg-[#0B1120]">
-                          {!opticalImgError ? (
-                            <img
-                              src="/src/assets/images/capability_optical_sensor_1795076459010.jpg"
-                              alt="Suspicious image comparison preview"
-                              referrerPolicy="no-referrer"
-                              onError={() => setOpticalImgError(true)}
-                              className="h-full w-full object-cover contrast-125 saturate-150"
-                            />
-                          ) : (
-                            <div className="flex h-full items-center justify-center bg-[#161F33]">
-                              <Columns2 className="h-9 w-9 text-amber-400" />
-                            </div>
-                          )}
-
-                          <div
-                            className="absolute inset-0 overflow-hidden"
-                            style={{ clipPath: `inset(0 ${100 - compareSlider}% 0 0)` }}
-                          >
-                            {!heroImgError ? (
-                              <img
-                                src="/src/assets/images/hero_forensics_lab_1795076459822.jpg"
-                                alt="Real reference comparison preview"
-                                referrerPolicy="no-referrer"
-                                onError={() => setHeroImgError(true)}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <div className="flex h-full items-center justify-center bg-[#11192B]" />
-                            )}
-                          </div>
-
-                          <div
-                            className="pointer-events-none absolute inset-y-0 w-0.5 bg-sky-400"
-                            style={{ left: `${compareSlider}%` }}
-                          />
-
-                          <span className="pointer-events-none absolute left-3 top-3 rounded bg-[#0B1120]/85 px-2 py-1 text-[11px] font-medium text-emerald-300">
-                            Real Reference
-                          </span>
-                          <span className="pointer-events-none absolute right-3 top-3 rounded bg-[#0B1120]/85 px-2 py-1 text-[11px] font-medium text-amber-300">
-                            Suspicious Photo
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-3 text-xs text-slate-400">
-                          <ArrowLeftRight className="h-4 w-4 shrink-0 text-sky-400" />
-                          <input
-                            type="range"
-                            min={10}
-                            max={90}
-                            value={compareSlider}
-                            onChange={(e) => setCompareSlider(Number(e.target.value))}
-                            aria-label="Comparison split slider"
-                            className="w-full accent-sky-400"
-                          />
-                          <span className="font-mono tabular-nums text-slate-200 whitespace-nowrap">
-                            {compareSlider}%
-                          </span>
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {demoMode === 'video' && (
-                      <motion.div
-                        key="video"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-3"
-                      >
-                        <div className="relative aspect-[16/9] overflow-hidden rounded-lg border border-slate-800 bg-[#0B1120]">
-                          {!heroImgError ? (
-                            <img
-                              src="/src/assets/images/hero_forensics_lab_1795076459822.jpg"
-                              alt="Video frame sequence check preview"
-                              referrerPolicy="no-referrer"
-                              onError={() => setHeroImgError(true)}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <div className="flex h-full items-center justify-center bg-[#161F33]">
-                              <Film className="h-9 w-9 text-sky-400" />
-                            </div>
-                          )}
-                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
-                          <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-                            <span className="text-slate-200">
-                              {videoFrameIdx === 0 && '00:02s — Natural face lighting & eye blink'}
-                              {videoFrameIdx === 1 && '00:05s — Temporal lip-sync & motion shift flagged'}
-                              {videoFrameIdx === 2 && '00:08s — Stable background shadows verified'}
-                            </span>
-                            <span className="font-mono tabular-nums text-amber-300">
-                              Frame {videoFrameIdx + 1} / 3
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2">
-                          {['00:02s · Normal', '00:05s · Flagged', '00:08s · Normal'].map(
-                            (label, idx) => (
-                              <button
-                                key={label}
-                                type="button"
-                                onClick={() => setVideoFrameIdx(idx)}
-                                className={`rounded-md border px-2.5 py-1.5 font-mono text-[11px] tabular-nums transition-colors ${
-                                  videoFrameIdx === idx
-                                    ? 'border-sky-500 bg-sky-500/15 text-sky-300'
-                                    : 'border-slate-800 bg-[#0B1120] text-slate-400 hover:text-slate-200'
-                                }`}
-                              >
-                                {label}
-                              </button>
-                            )
-                          )}
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {demoMode === 'voice' && (
-                      <motion.div
-                        key="voice"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-3"
-                      >
-                        <div className="relative aspect-[16/9] overflow-hidden rounded-lg border border-slate-800 bg-[#0B1120] p-4 flex flex-col justify-between">
-                          {!audioImgError && (
-                            <img
-                              src="/src/assets/images/capability_audio_console_1795076460182.jpg"
-                              alt=""
-                              aria-hidden="true"
-                              referrerPolicy="no-referrer"
-                              onError={() => setAudioImgError(true)}
-                              className="absolute inset-0 h-full w-full object-cover opacity-20"
-                            />
-                          )}
-                          <div className="relative z-10 flex items-center justify-between text-xs">
-                            <span className="font-medium text-slate-200">
-                              Click any segment to inspect spectrogram &amp; breathing cues
-                            </span>
-                            <span className="font-mono tabular-nums text-sky-300">
-                              00:{String(activeWaveBar + 1).padStart(2, '0')}s
-                            </span>
-                          </div>
-
-                          <div className="relative z-10 flex h-28 items-end gap-1.5">
-                            {WAVE_BARS.map((heightPct, idx) => {
-                              const isSelected = activeWaveBar === idx;
-                              const isFlagged = idx >= 5 && idx <= 8;
-                              return (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  onClick={() => setActiveWaveBar(idx)}
-                                  aria-label={`Inspect audio segment ${idx + 1}`}
-                                  className="group flex h-full flex-1 items-end"
-                                >
-                                  <motion.span
-                                    initial={{ scaleY: 0.5 }}
-                                    animate={{ scaleY: 1 }}
-                                    transition={{ duration: 0.25, delay: idx * 0.015 }}
-                                    style={{ height: `${heightPct}%`, transformOrigin: 'bottom' }}
-                                    className={`w-full rounded-t transition-colors ${
-                                      isSelected
-                                        ? 'bg-sky-400'
-                                        : isFlagged
-                                        ? 'bg-amber-400/70 group-hover:bg-amber-300'
-                                        : 'bg-slate-600/80 group-hover:bg-slate-400'
-                                    }`}
-                                  />
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          <div className="relative z-10 flex items-center justify-between text-xs text-slate-300">
-                            <span>
-                              {activeWaveBar >= 5 && activeWaveBar <= 8
-                                ? 'Uniform pitch contour & missing breath pause detected'
-                                : 'Natural room noise & prosody variation observed'}
-                            </span>
-                            <span className="font-mono tabular-nums text-slate-400">MFCC + STFT</span>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {demoMode === 'text' && (
+                    {/* 2. REAL LIVE TEXT STYLOMETRY (USING TRUTH-LENS'S ACTUAL ENGINE) */}
+                    {activeTab === 'text' && (
                       <motion.div
                         key="text"
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.18 }}
-                        className="space-y-3"
+                        transition={{ duration: 0.2 }}
+                        className="space-y-4"
                       >
-                        <div className="aspect-[16/9] overflow-hidden rounded-lg border border-slate-800 bg-[#0B1120] p-4 flex flex-col justify-between">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium text-slate-200">
-                              Stylometry &amp; Predictability Check
-                            </span>
-                            <div className="flex items-center gap-1 rounded-md border border-slate-800 bg-[#11192B] p-0.5">
-                              {(['ai', 'human'] as const).map((kind) => (
-                                <button
-                                  key={kind}
-                                  type="button"
-                                  onClick={() => setTextSample(kind)}
-                                  className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                                    textSample === kind
-                                      ? 'bg-sky-500 text-slate-950'
-                                      : 'text-slate-400 hover:text-slate-100'
-                                  }`}
-                                >
-                                  {kind === 'ai' ? 'AI Sample' : 'Human Sample'}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          <p className="rounded-lg border border-slate-800 bg-[#11192B] p-3.5 text-xs leading-relaxed text-slate-300">
-                            {textSample === 'ai'
-                              ? '“Furthermore, the integration of emerging technologies underscores the critical importance of establishing robust governance frameworks across multifaceted global ecosystems.”'
-                              : '“Honestly, the draft still feels rushed—we cut two sections before noon and left the raw field notes at the bottom so editors can check the dates.”'}
-                          </p>
-
-                          <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-                            <span
-                              className={
-                                textSample === 'ai' ? 'text-amber-300 font-medium' : 'text-emerald-300 font-medium'
-                              }
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                            Paste or type any paragraph to measure real stylometry
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setLiveText(SAMPLE_AI_TEXT)}
+                              className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-200"
                             >
-                              {textSample === 'ai'
-                                ? 'Result: AI-Generated · Low sentence variance'
-                                : 'Result: Human-Written · Natural burstiness'}
-                            </span>
-                            <span className="font-mono tabular-nums text-slate-400">
-                              {textSample === 'ai' ? 'AI Probability: 91%' : 'AI Probability: 8%'}
-                            </span>
+                              Try Formal AI Sample
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setLiveText(SAMPLE_HUMAN_TEXT)}
+                              className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-200"
+                            >
+                              Try Human Notes
+                            </button>
+                            {liveText && (
+                              <button
+                                type="button"
+                                onClick={() => setLiveText('')}
+                                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-500 hover:text-slate-900 dark:border-slate-700 dark:bg-[#11192B] dark:text-slate-400"
+                              >
+                                Clear
+                              </button>
+                            )}
                           </div>
                         </div>
+
+                        <textarea
+                          rows={4}
+                          value={liveText}
+                          onChange={(e) => setLiveText(e.target.value)}
+                          placeholder="Paste an email, article, or transcript here to compute sentence burstiness, type-token ratio, and template triggers..."
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs leading-relaxed text-slate-800 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-100 dark:placeholder-slate-500 dark:focus:border-sky-400"
+                        />
+
+                        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 font-mono text-xs">
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-[#0B1120]">
+                            <div className="text-[10px] uppercase text-slate-400">Words / Sent</div>
+                            <div className="mt-0.5 font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                              {stylometry.wordCount} / {stylometry.sentenceCount}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-[#0B1120]">
+                            <div className="text-[10px] uppercase text-slate-400">Burstiness</div>
+                            <div className="mt-0.5 font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                              {stylometry.burstiness}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-[#0B1120]">
+                            <div className="text-[10px] uppercase text-slate-400">Diversity (TTR)</div>
+                            <div className="mt-0.5 font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                              {stylometry.typeTokenRatio}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-[#0B1120]">
+                            <div className="text-[10px] uppercase text-slate-400">AI Clichés</div>
+                            <div
+                              className={`mt-0.5 font-bold tabular-nums ${
+                                stylometry.aiPhraseHits.length > 0
+                                  ? 'text-rose-700 dark:text-rose-400'
+                                  : 'text-blue-700 dark:text-sky-400'
+                              }`}
+                            >
+                              {stylometry.aiPhraseHits.length} hit(s)
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700 dark:border-slate-800 dark:bg-[#0B1120] dark:text-slate-300">
+                          {renderHighlightedPhrases()}
+                        </div>
+
+                        {liveText.trim() && stylometry.isShortPassage && (
+                          <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                            Honest limit: Passages under 60 words or 3 sentences have limited statistical weight; full model review in the workspace combines stylometry with linguistic context.
+                          </p>
+                        )}
+                      </motion.div>
+                    )}
+
+                    {/* 3. REAL TWO-PHOTO SPLIT COMPARATOR (USER'S OWN PHOTOS) */}
+                    {activeTab === 'compare' && (
+                      <motion.div
+                        key="compare"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.2 }}
+                        className="space-y-4"
+                      >
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-2.5 text-xs hover:border-blue-500 dark:border-slate-700 dark:bg-[#0B1120] dark:hover:border-sky-400 transition-colors">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <ImageIcon className="h-4 w-4 text-blue-700 dark:text-sky-400 shrink-0" />
+                              <span className="truncate font-semibold text-slate-800 dark:text-slate-100">
+                                {photoA ? photoA.name : 'Pick Photo A (Original)'}
+                              </span>
+                            </div>
+                            <span className="font-mono text-[11px] text-blue-700 dark:text-sky-400 shrink-0">
+                              Browse
+                            </span>
+                            <input
+                              type="file"
+                              accept=".jpg,.jpeg,.png,.webp"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleCompareUpload('a', f);
+                                e.target.value = '';
+                              }}
+                            />
+                          </label>
+
+                          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3.5 py-2.5 text-xs hover:border-blue-500 dark:border-slate-700 dark:bg-[#0B1120] dark:hover:border-sky-400 transition-colors">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <ImageIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                              <span className="truncate font-semibold text-slate-800 dark:text-slate-100">
+                                {photoB ? photoB.name : 'Pick Photo B (Suspect)'}
+                              </span>
+                            </div>
+                            <span className="font-mono text-[11px] text-blue-700 dark:text-sky-400 shrink-0">
+                              Browse
+                            </span>
+                            <input
+                              type="file"
+                              accept=".jpg,.jpeg,.png,.webp"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleCompareUpload('b', f);
+                                e.target.value = '';
+                              }}
+                            />
+                          </label>
+                        </div>
+
+                        {photoA && photoB ? (
+                          <div className="space-y-3">
+                            <div
+                              ref={splitBoxRef}
+                              onPointerDown={(e) => {
+                                setDraggingSplit(true);
+                                updateSplitFromPointer(e.clientX);
+                              }}
+                              onPointerMove={(e) => {
+                                if (draggingSplit) updateSplitFromPointer(e.clientX);
+                              }}
+                              onPointerUp={() => setDraggingSplit(false)}
+                              onPointerLeave={() => setDraggingSplit(false)}
+                              className="relative aspect-[16/9] overflow-hidden rounded-xl border border-slate-800 bg-[#0F172A] cursor-ew-resize select-none touch-none"
+                            >
+                              <img
+                                src={photoB.url}
+                                alt={photoB.name}
+                                className="h-full w-full object-contain pointer-events-none"
+                              />
+                              <div
+                                className="absolute inset-0 overflow-hidden pointer-events-none"
+                                style={{ clipPath: `inset(0 ${100 - splitPos}% 0 0)` }}
+                              >
+                                <img
+                                  src={photoA.url}
+                                  alt={photoA.name}
+                                  className="h-full w-full object-contain"
+                                />
+                              </div>
+
+                              <div
+                                className="pointer-events-none absolute inset-y-0 w-0.5 bg-sky-400"
+                                style={{ left: `${splitPos}%` }}
+                              >
+                                <motion.div
+                                  animate={{ scale: draggingSplit ? 1.15 : 1 }}
+                                  className="absolute top-1/2 -left-4 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-sky-300 bg-slate-950/90 text-sky-300 shadow-lg"
+                                >
+                                  <ArrowLeftRight className="h-3.5 w-3.5" />
+                                </motion.div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 text-xs text-slate-600 dark:text-slate-300">
+                              <span className="whitespace-nowrap">Drag image or slider</span>
+                              <input
+                                type="range"
+                                min={5}
+                                max={95}
+                                value={splitPos}
+                                onChange={(e) => setSplitPos(Number(e.target.value))}
+                                className="w-full accent-blue-700 dark:accent-sky-400"
+                              />
+                              <span className="font-mono font-semibold tabular-nums whitespace-nowrap">
+                                {splitPos}%
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex min-h-[210px] flex-col items-center justify-center rounded-xl border border-slate-200 bg-slate-50 p-6 text-center dark:border-slate-800 dark:bg-[#0B1120]">
+                            <Columns2 className="h-7 w-7 text-blue-700 dark:text-sky-400" />
+                            <p className="mt-2.5 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                              Select two local photos above to compare them side-by-side
+                            </p>
+                            <p className="mt-1 max-w-sm text-xs text-slate-500 dark:text-slate-400">
+                              Once selected, drag the interactive split divider across both images directly in your browser.
+                            </p>
+                          </div>
+                        )}
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -632,153 +862,14 @@ export function LandingPage({
               </div>
             </motion.div>
           </section>
-
-          {/* Compact Interactive Workflow + Honest Verdict Guide */}
-          <section
-            id="workflow"
-            className="border-t border-slate-800/80 py-12 grid grid-cols-1 gap-8 lg:grid-cols-12"
-          >
-            {/* Interactive 3-Step Workflow */}
-            <div className="lg:col-span-7 space-y-4">
-              <div>
-                <p className="text-xs font-medium text-sky-400">How It Works</p>
-                <h2 className="mt-1.5 text-xl font-bold tracking-tight text-slate-50">
-                  Three steps from upload to PDF report
-                </h2>
-              </div>
-
-              <div className="space-y-2.5">
-                {WORKFLOW_STEPS.map((item, idx) => {
-                  const Icon = item.icon;
-                  const active = activeStep === idx;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setActiveStep(idx)}
-                      className={`w-full rounded-xl border p-4 text-left transition-colors ${
-                        active
-                          ? 'border-sky-500/50 bg-[#11192B]'
-                          : 'border-slate-800 bg-[#0E1526] hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <Icon
-                            className={`h-4 w-4 shrink-0 ${
-                              active ? 'text-sky-400' : 'text-slate-500'
-                            }`}
-                          />
-                          <span className="font-mono text-xs tabular-nums text-slate-400">
-                            {item.step}
-                          </span>
-                          <span className="text-sm font-semibold text-slate-100">
-                            {item.title}
-                          </span>
-                        </div>
-                        <ChevronRight
-                          className={`h-4 w-4 shrink-0 transition-transform duration-200 ${
-                            active ? 'rotate-90 text-sky-400' : 'text-slate-500'
-                          }`}
-                        />
-                      </div>
-
-                      <AnimatePresence initial={false}>
-                        {active && (
-                          <motion.p
-                            initial={{ opacity: 0, y: -4 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -4 }}
-                            transition={{ duration: 0.16 }}
-                            className="mt-2.5 pl-7 text-xs leading-relaxed text-slate-400"
-                          >
-                            {item.detail}
-                          </motion.p>
-                        )}
-                      </AnimatePresence>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Interactive Verdict Guide */}
-            <div id="verdicts" className="lg:col-span-5 space-y-4">
-              <div>
-                <p className="text-xs font-medium text-sky-400">Transparent Verdicts</p>
-                <h2 className="mt-1.5 text-xl font-bold tracking-tight text-slate-50">
-                  Clear labels, honest limits
-                </h2>
-              </div>
-
-              <div className="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-[#11192B]">
-                {VERDICT_ITEMS.map((v) => {
-                  const isOpen = openVerdict === v.id;
-                  return (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() => setOpenVerdict(v.id)}
-                      className="w-full p-4 text-left transition-colors hover:bg-slate-800/30"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className={`inline-flex items-center gap-2 text-sm font-semibold ${v.tone}`}>
-                          {v.id === 'suspicious' && <ShieldAlert className="h-4 w-4" />}
-                          {v.id === 'normal' && <CheckCircle2 className="h-4 w-4" />}
-                          <span>{v.label}</span>
-                        </span>
-                        <ChevronRight
-                          className={`h-4 w-4 shrink-0 transition-transform duration-200 ${
-                            isOpen ? 'rotate-90 text-sky-400' : 'text-slate-500'
-                          }`}
-                        />
-                      </div>
-                      <AnimatePresence initial={false}>
-                        {isOpen && (
-                          <motion.p
-                            initial={{ opacity: 0, y: -3 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -3 }}
-                            transition={{ duration: 0.16 }}
-                            className="mt-2 text-xs leading-relaxed text-slate-400"
-                          >
-                            {v.summary}
-                          </motion.p>
-                        )}
-                      </AnimatePresence>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-
-          {/* Compact Bottom CTA */}
-          <section className="mb-10 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-800 bg-[#11192B] px-6 py-5">
-            <div>
-              <h2 className="text-base font-semibold text-slate-50">
-                Ready to verify a file or compare two photos?
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-400">
-                Sign in with Google to run checks, save cases, and export PDF reports.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleGetStarted}
-              disabled={signingIn}
-              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 active:scale-[0.98] transition-all disabled:opacity-60 whitespace-nowrap shrink-0"
-            >
-              <span>{user ? 'Open Workspace' : signingIn ? 'Signing in...' : 'Get Started'}</span>
-              <ArrowRight className="h-4 w-4" />
-            </button>
-          </section>
         </main>
 
-        <footer className="border-t border-slate-800/80 py-5">
-          <div className="mx-auto flex max-w-[1240px] flex-wrap items-center justify-between gap-4 px-6 text-xs text-slate-500">
-            <span>TruthLens · Multimodal Media Verification</span>
-            <span>Content-first signal analysis with transparent confidence limits</span>
+        <footer className="border-t border-slate-200 bg-white py-4 dark:border-slate-800 dark:bg-[#0B1120]">
+          <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-4 px-6 text-xs text-slate-500 dark:text-slate-400">
+            <span className="font-semibold text-slate-700 dark:text-slate-200">
+              TruthLens · Multimodal Digital Forensics
+            </span>
+            <span>Client-side SHA-256 pre-checks · Full server forensics &amp; PDF export in workspace</span>
           </div>
         </footer>
       </div>

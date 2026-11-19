@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { db } from './index.ts';
+import { db, isDatabaseConfigured } from './index.ts';
+import { getMemoryDb } from './memoryStore.ts';
 import {
   activityLogs,
   crossModalCorrelations,
@@ -29,6 +30,27 @@ export async function generateCaseCode(): Promise<string> {
 }
 
 export async function createInvestigationRecord(input: CreateInvestigationInput) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const now = new Date();
+    const created = {
+      id: mem.nextInvestigationId++,
+      caseCode: await generateCaseCode(),
+      userId: input.userId,
+      title: input.title,
+      description: input.description,
+      overallAssessment: input.overallAssessment,
+      overallConfidence: input.overallConfidence,
+      summary: input.summary,
+      limitations: input.limitations,
+      recommendations: input.recommendations,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mem.investigations.push(created);
+    return created;
+  }
+
   try {
     const caseCode = await generateCaseCode();
     const [created] = await db
@@ -62,6 +84,14 @@ export async function updateInvestigationSynthesis(
     recommendations: string[];
   }
 ) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const inv = mem.investigations.find((i) => i.id === investigationId);
+    if (!inv) return undefined;
+    Object.assign(inv, updates, { updatedAt: new Date() });
+    return inv;
+  }
+
   try {
     const [updated] = await db
       .update(investigations)
@@ -103,6 +133,47 @@ export async function insertEvidenceItemWithFindings(params: {
     regionJson: FindingRegion | null;
   }>;
 }) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const now = new Date();
+    const item = {
+      id: mem.nextEvidenceId++,
+      investigationId: params.investigationId,
+      modality: params.modality,
+      filename: params.filename,
+      mimeType: params.mimeType,
+      fileSize: params.fileSize,
+      sha256Hash: params.sha256Hash,
+      storagePath: params.storagePath,
+      elaPath: params.elaPath,
+      metadataJson: params.metadataJson,
+      extractedText: params.extractedText,
+      classification: params.classification,
+      confidence: params.confidence,
+      technicalSummary: params.technicalSummary,
+      createdAt: now,
+    };
+    mem.evidenceItems.push(item);
+
+    for (const f of params.findings) {
+      mem.forensicFindings.push({
+        id: mem.nextFindingId++,
+        evidenceItemId: item.id,
+        whatDetected: f.whatDetected,
+        whereDetected: f.whereDetected,
+        whyFlagged: f.whyFlagged,
+        analysisMethod: f.analysisMethod,
+        confidence: f.confidence,
+        limitations: f.limitations,
+        classification: f.classification,
+        regionJson: f.regionJson,
+        createdAt: now,
+      });
+    }
+
+    return item;
+  }
+
   try {
     const [item] = await db
       .insert(evidenceItems)
@@ -158,6 +229,28 @@ export async function replaceCrossModalCorrelations(
     limitations: string;
   }>
 ) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    mem.crossModalCorrelations = mem.crossModalCorrelations.filter(
+      (c) => c.investigationId !== investigationId
+    );
+    const now = new Date();
+    const inserted = correlations.map((c) => ({
+      id: mem.nextCorrelationId++,
+      investigationId,
+      pairType: c.pairType,
+      title: c.title,
+      sourceEvidenceIds: c.sourceEvidenceIds,
+      findingSummary: c.findingSummary,
+      consistencyStatus: c.consistencyStatus,
+      confidence: c.confidence,
+      limitations: c.limitations,
+      createdAt: now,
+    }));
+    mem.crossModalCorrelations.push(...inserted);
+    return inserted;
+  }
+
   try {
     await db
       .delete(crossModalCorrelations)
@@ -192,6 +285,19 @@ export async function logUserActivity(params: {
   actionType: string;
   description: string;
 }) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    mem.activityLogs.push({
+      id: mem.nextActivityId++,
+      userId: params.userId,
+      investigationId: params.investigationId ?? null,
+      actionType: params.actionType,
+      description: params.description,
+      createdAt: new Date(),
+    });
+    return;
+  }
+
   try {
     await db.insert(activityLogs).values({
       userId: params.userId,
@@ -205,6 +311,70 @@ export async function logUserActivity(params: {
 }
 
 export async function getUserDashboardData(userId: number) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const userInvestigations = mem.investigations
+      .filter((i) => i.userId === userId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    const invIds = new Set(userInvestigations.map((i) => i.id));
+    const items = mem.evidenceItems
+      .filter((item) => invIds.has(item.investigationId))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    const logs = mem.activityLogs
+      .filter((l) => l.userId === userId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 12);
+
+    const totalFiles = items.length;
+    const suspiciousFiles = items.filter((i) => i.classification === 'Suspicious').length;
+    const verifiedLowRiskFiles = items.filter(
+      (i) => i.classification === 'No Significant Indicators Detected'
+    ).length;
+
+    const modalityCounts = {
+      image: items.filter((i) => i.modality === 'image').length,
+      video: items.filter((i) => i.modality === 'video').length,
+      audio: items.filter((i) => i.modality === 'audio').length,
+      text: items.filter((i) => i.modality === 'text').length,
+    };
+
+    const classificationCounts = {
+      Suspicious: suspiciousFiles,
+      'No Significant Indicators Detected': verifiedLowRiskFiles,
+      Inconclusive: items.filter((i) => i.classification === 'Inconclusive').length,
+      'Analysis Unavailable': items.filter((i) => i.classification === 'Analysis Unavailable').length,
+    };
+
+    const evidenceByInv = new Map<number, typeof items>();
+    for (const item of items) {
+      const arr = evidenceByInv.get(item.investigationId) ?? [];
+      arr.push(item);
+      evidenceByInv.set(item.investigationId, arr);
+    }
+
+    const enrichedInvestigations = userInvestigations.map((inv) => ({
+      ...inv,
+      evidenceCount: (evidenceByInv.get(inv.id) ?? []).length,
+      modalities: Array.from(new Set((evidenceByInv.get(inv.id) ?? []).map((e) => e.modality))),
+    }));
+
+    return {
+      stats: {
+        totalFiles,
+        suspiciousFiles,
+        verifiedLowRiskFiles,
+        totalInvestigations: userInvestigations.length,
+        modalityCounts,
+        classificationCounts,
+      },
+      investigations: enrichedInvestigations,
+      recentActivity: logs,
+      evidenceItems: items,
+    };
+  }
+
   try {
     const userInvestigations = await db
       .select()
@@ -282,6 +452,43 @@ export async function getUserDashboardData(userId: number) {
 }
 
 export async function getInvestigationDetail(userId: number, investigationId: number) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const inv = mem.investigations.find(
+      (i) => i.id === investigationId && i.userId === userId
+    );
+    if (!inv) return null;
+
+    const items = mem.evidenceItems
+      .filter((e) => e.investigationId === inv.id)
+      .sort((a, b) => a.id - b.id);
+
+    const itemIdSet = new Set(items.map((i) => i.id));
+    const findings = mem.forensicFindings
+      .filter((f) => itemIdSet.has(f.evidenceItemId))
+      .sort((a, b) => a.id - b.id);
+
+    const correlations = mem.crossModalCorrelations
+      .filter((c) => c.investigationId === inv.id)
+      .sort((a, b) => a.id - b.id);
+
+    const findingsByItem = new Map<number, typeof findings>();
+    for (const f of findings) {
+      const arr = findingsByItem.get(f.evidenceItemId) ?? [];
+      arr.push(f);
+      findingsByItem.set(f.evidenceItemId, arr);
+    }
+
+    return {
+      ...inv,
+      evidenceItems: items.map((item) => ({
+        ...item,
+        findings: findingsByItem.get(item.id) ?? [],
+      })),
+      correlations,
+    };
+  }
+
   try {
     const [inv] = await db
       .select()
@@ -335,6 +542,28 @@ export async function getInvestigationDetail(userId: number, investigationId: nu
 }
 
 export async function deleteUserInvestigation(userId: number, investigationId: number) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const idx = mem.investigations.findIndex(
+      (i) => i.id === investigationId && i.userId === userId
+    );
+    if (idx === -1) return null;
+    const [deleted] = mem.investigations.splice(idx, 1);
+    const removedEvidenceIds = new Set(
+      mem.evidenceItems
+        .filter((e) => e.investigationId === deleted.id)
+        .map((e) => e.id)
+    );
+    mem.evidenceItems = mem.evidenceItems.filter((e) => e.investigationId !== deleted.id);
+    mem.forensicFindings = mem.forensicFindings.filter(
+      (f) => !removedEvidenceIds.has(f.evidenceItemId)
+    );
+    mem.crossModalCorrelations = mem.crossModalCorrelations.filter(
+      (c) => c.investigationId !== deleted.id
+    );
+    return deleted;
+  }
+
   try {
     const [deleted] = await db
       .delete(investigations)
@@ -348,6 +577,16 @@ export async function deleteUserInvestigation(userId: number, investigationId: n
 }
 
 export async function getUserEvidenceItemById(userId: number, evidenceId: number) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const item = mem.evidenceItems.find((e) => e.id === evidenceId);
+    if (!item) return null;
+    const owner = mem.investigations.find(
+      (i) => i.id === item.investigationId && i.userId === userId
+    );
+    return owner ? item : null;
+  }
+
   try {
     const rows = await db
       .select({

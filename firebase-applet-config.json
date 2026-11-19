@@ -1,11 +1,12 @@
 {
-  "projectId": "endless-weft-4w1xt",
-  "appId": "1:704727409894:web:2fbdd111b7ffc10c578727",
-  "apiKey": "AIzaSyCbHbc1dhcLPrzn-sDU1eKHOofcH2lHPKc",
-  "authDomain": "endless-weft-4w1xt.firebaseapp.com",
-  "storageBucket": "endless-weft-4w1xt.firebasestorage.app",
-  "messagingSenderId": "704727409894",
+  "projectId": "generated-conduit-k5v9p",
+  "appId": "1:784388450158:web:6b131ec53bf5d2df67837f",
+  "apiKey": "AIzaSyAjYFb2Ds9KdhLZDjiAWRokrRUD9IBtflU",
+  "authDomain": "generated-conduit-k5v9p.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-24hrshackethon-3fdfe4e1-fd24-412a-a231-05d0068ddaf9",
+  "storageBucket": "generated-conduit-k5v9p.firebasestorage.app",
+  "messagingSenderId": "784388450158",
   "measurementId": "",
-  "oAuthClientId": "704727409894-qdeglpr3acqn2ii52fqlbb2dpesivhpp.apps.googleusercontent.com",
+  "oAuthClientId": "784388450158-ppr2ebe5sl4i3sdf0q3ibhlsqj523qfe.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

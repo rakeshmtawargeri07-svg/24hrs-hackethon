@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { db } from './index.ts';
+import { db, isDatabaseConfigured } from './index.ts';
+import { getMemoryDb } from './memoryStore.ts';
 import { users } from './schema.ts';
 
 export async function getOrCreateUser(
@@ -8,6 +9,30 @@ export async function getOrCreateUser(
   displayName?: string | null,
   photoUrl?: string | null
 ) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const existing = mem.users.find((u) => u.uid === uid);
+    if (existing) {
+      existing.email = email;
+      if (displayName !== undefined) existing.displayName = displayName ?? null;
+      if (photoUrl !== undefined) existing.photoUrl = photoUrl ?? null;
+      return existing;
+    }
+    const created = {
+      id: mem.nextUserId++,
+      uid,
+      email,
+      displayName: displayName ?? null,
+      photoUrl: photoUrl ?? null,
+      defaultConfidenceThreshold: 65,
+      includeLimitationsInExports: true,
+      analystOrganization: 'Independent Forensic Unit',
+      createdAt: new Date(),
+    };
+    mem.users.push(created);
+    return created;
+  }
+
   try {
     const result = await db
       .insert(users)
@@ -35,6 +60,11 @@ export async function getOrCreateUser(
 }
 
 export async function getUserByUid(uid: string) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    return mem.users.find((u) => u.uid === uid) ?? null;
+  }
+
   try {
     const result = await db.select().from(users).where(eq(users.uid, uid)).limit(1);
     return result[0] ?? null;
@@ -53,6 +83,14 @@ export async function updateUserSettings(
     includeLimitationsInExports?: boolean;
   }
 ) {
+  if (!isDatabaseConfigured) {
+    const mem = getMemoryDb();
+    const user = mem.users.find((u) => u.id === userId);
+    if (!user) return undefined;
+    Object.assign(user, updates);
+    return user;
+  }
+
   try {
     const result = await db
       .update(users)

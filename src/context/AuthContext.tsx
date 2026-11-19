@@ -1,15 +1,111 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
-import { auth, googleAuthProvider } from '../lib/firebase';
+import {
+  getAdditionalUserInfo,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+  User,
+} from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import {
+  auth,
+  db,
+  googleAuthProvider,
+  handleFirestoreError,
+  OperationType,
+} from '../lib/firebase';
 import { apiFetch } from '../lib/api';
 import { UserProfile } from '../types/forensics';
+
+const UID_REGEX = /^[a-zA-Z0-9_\-]+$/;
+const inFlightFirestoreSync = new Map<string, Promise<void>>();
+
+function formatAuthError(err: any): string {
+  const code = String(err?.code || '');
+  if (code === 'auth/popup-closed-by-user') {
+    return 'Google sign-in popup was closed before completing.';
+  }
+  if (code === 'auth/cancelled-popup-request') {
+    return 'Sign-in request was superseded by another popup.';
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Popup was blocked by your browser. Please allow popups for this site and try again.';
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return 'This preview domain is not authorized in Firebase Authentication.';
+  }
+  return err?.message || 'Google sign-in failed. Please try again.';
+}
+
+async function performFirestoreUserProfileSync(firebaseUser: User): Promise<void> {
+  if (!firebaseUser.uid || !UID_REGEX.test(firebaseUser.uid) || firebaseUser.uid.length > 128) {
+    return;
+  }
+  const email = (firebaseUser.email || '').trim().slice(0, 320);
+  if (!email || !firebaseUser.emailVerified) {
+    return;
+  }
+
+  const displayName = (firebaseUser.displayName || '').trim().slice(0, 120);
+  const photoUrl = (firebaseUser.photoURL || '').trim().slice(0, 1024);
+  const userPath = `users/${firebaseUser.uid}`;
+  const userRef = doc(db, 'users', firebaseUser.uid);
+
+  let existingSnap;
+  try {
+    existingSnap = await getDoc(userRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, userPath);
+  }
+
+  if (!existingSnap.exists()) {
+    try {
+      await setDoc(userRef, {
+        uid: firebaseUser.uid,
+        email,
+        displayName,
+        photoUrl,
+        provider: 'google.com',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, userPath);
+    }
+  } else {
+    try {
+      await updateDoc(userRef, {
+        email,
+        displayName,
+        photoUrl,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, userPath);
+    }
+  }
+}
+
+function syncFirestoreUserProfile(firebaseUser: User): Promise<void> {
+  const existingPromise = inFlightFirestoreSync.get(firebaseUser.uid);
+  if (existingPromise) {
+    return existingPromise;
+  }
+  const syncPromise = performFirestoreUserProfileSync(firebaseUser).finally(() => {
+    inFlightFirestoreSync.delete(firebaseUser.uid);
+  });
+  inFlightFirestoreSync.set(firebaseUser.uid, syncPromise);
+  return syncPromise;
+}
 
 interface AuthContextValue {
   user: User | null;
   dbUser: UserProfile | null;
   loading: boolean;
+  isNewUser: boolean;
   authError: string | null;
-  signInWithGoogle: () => Promise<void>;
+  signInWithGoogle: () => Promise<boolean>;
+  signUpWithGoogle: () => Promise<boolean>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -20,6 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [dbUser, setDbUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isNewUser, setIsNewUser] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
   const syncProfile = useCallback(async (firebaseUser: User | null) => {
@@ -28,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     try {
+      await syncFirestoreUserProfile(firebaseUser);
       const res = await apiFetch<{ user: UserProfile }>(firebaseUser, '/api/me');
       setDbUser(res.user);
       setAuthError(null);
@@ -39,26 +137,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
-      await syncProfile(firebaseUser);
+      if (firebaseUser) {
+        await syncProfile(firebaseUser);
+      } else {
+        setDbUser(null);
+        setIsNewUser(false);
+      }
       setLoading(false);
     });
     return () => unsub();
   }, [syncProfile]);
 
-  const signInWithGoogle = useCallback(async () => {
+  const authenticateWithGoogle = useCallback(async (): Promise<boolean> => {
     setAuthError(null);
     try {
       const cred = await signInWithPopup(auth, googleAuthProvider);
+      const additional = getAdditionalUserInfo(cred);
+      const newlyCreated = Boolean(additional?.isNewUser);
+      setIsNewUser(newlyCreated);
+      setUser(cred.user);
       await syncProfile(cred.user);
+      return newlyCreated;
     } catch (err: any) {
-      setAuthError(err?.message || 'Google sign-in was cancelled or failed.');
+      setAuthError(formatAuthError(err));
       throw err;
     }
   }, [syncProfile]);
 
   const logout = useCallback(async () => {
     await signOut(auth);
+    setUser(null);
     setDbUser(null);
+    setIsNewUser(false);
+    setAuthError(null);
   }, []);
 
   const refreshProfile = useCallback(async () => {
@@ -71,8 +182,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         dbUser,
         loading,
+        isNewUser,
         authError,
-        signInWithGoogle,
+        signInWithGoogle: authenticateWithGoogle,
+        signUpWithGoogle: authenticateWithGoogle,
         logout,
         refreshProfile,
       }}

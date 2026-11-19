@@ -1,13 +1,18 @@
 import {
+  CheckSquare,
+  Columns2,
   FileAudio,
   FileImage,
   FileText,
   FileVideo,
+  Layers,
   Loader2,
+  Play,
+  ShieldCheck,
   Trash2,
   UploadCloud,
 } from 'lucide-react';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { apiFetch, ensureServerReady } from '../../lib/api';
 import {
@@ -44,6 +49,39 @@ const ACCEPTED_EXTS = [
   '.docx',
 ];
 
+const ENGINE_MODULES = [
+  {
+    id: 'fft',
+    name: '2D-FFT & Frequency Artifacts',
+    desc: 'Detects synthetic upsampling grids & radial spectral anomalies',
+    modalities: ['image', 'video'] as EvidenceModality[],
+  },
+  {
+    id: 'ela',
+    name: 'Error Level Analysis (ELA)',
+    desc: 'Maps differential compression rates & localized splice regions',
+    modalities: ['image'] as EvidenceModality[],
+  },
+  {
+    id: 'temporal',
+    name: 'Video Temporal Frame Check',
+    desc: 'Evaluates keyframe luminance jitter, face consistency & pixel jumps',
+    modalities: ['video'] as EvidenceModality[],
+  },
+  {
+    id: 'audio',
+    name: 'Voice Clone & Spectral MFCC',
+    desc: 'Screens STFT cutoff, noise floor & synthetic formant patterns',
+    modalities: ['audio'] as EvidenceModality[],
+  },
+  {
+    id: 'stylometry',
+    name: 'Linguistic & Stylometry AI',
+    desc: 'Computes burstiness, lexical diversity & cross-modal claims',
+    modalities: ['text', 'audio', 'video'] as EvidenceModality[],
+  },
+];
+
 function detectModality(filename: string): EvidenceModality | null {
   const lower = filename.toLowerCase();
   if (/\.(jpg|jpeg|png|webp)$/.test(lower)) return 'image';
@@ -54,12 +92,19 @@ function detectModality(filename: string): EvidenceModality | null {
 }
 
 export function NewInvestigationView({
+  initialFiles = [],
+  onConsumedInitialFiles,
+  onSwitchToCompare,
   onInvestigationCreated,
 }: {
+  initialFiles?: File[];
+  onConsumedInitialFiles?: () => void;
+  onSwitchToCompare?: () => void;
   onInvestigationCreated: (inv: InvestigationDetail) => void;
 }) {
   const { user } = useAuth();
   const [title, setTitle] = useState('');
+  const [priority, setPriority] = useState('Standard Review');
   const [description, setDescription] = useState('');
   const [pastedTextTitle, setPastedTextTitle] = useState('accompanying-transcript.txt');
   const [pastedText, setPastedText] = useState('');
@@ -70,7 +115,7 @@ export function NewInvestigationView({
   const [progressStage, setProgressStage] = useState('');
   const [elapsedSec, setElapsedSec] = useState(0);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!submitting) {
       setElapsedSec(0);
       return;
@@ -92,7 +137,6 @@ export function NewInvestigationView({
         continue;
       }
 
-      // Snapshot files <= 25 MB into memory so disk/temp-cache edits never trigger ERR_UPLOAD_FILE_CHANGED
       let safeFile = file;
       if (file.size <= 25 * 1024 * 1024) {
         try {
@@ -120,7 +164,7 @@ export function NewInvestigationView({
             ? 'Extracting video keyframes...'
             : modality === 'audio'
             ? 'Computing acoustic waveform...'
-            : 'Ready for analysis',
+            : 'Ready for SHA-256 & signal analysis',
       };
 
       setStagedFiles((prev) => [...prev, initial]);
@@ -160,12 +204,37 @@ export function NewInvestigationView({
     }
   }, []);
 
+  useEffect(() => {
+    if (initialFiles && initialFiles.length > 0) {
+      void addFiles(initialFiles);
+      if (onConsumedInitialFiles) onConsumedInitialFiles();
+    }
+  }, [initialFiles, addFiles, onConsumedInitialFiles]);
+
   const removeStagedFile = (id: string) => {
     setStagedFiles((prev) => {
       const target = prev.find((f) => f.id === id);
       if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
       return prev.filter((f) => f.id !== id);
     });
+  };
+
+  const clearAllStaged = () => {
+    setStagedFiles((prev) => {
+      for (const f of prev) {
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+      }
+      return [];
+    });
+  };
+
+  const handleClearForm = () => {
+    setTitle('');
+    setPriority('Standard Review');
+    setDescription('');
+    setPastedText('');
+    setErrorMsg(null);
+    clearAllStaged();
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -191,7 +260,13 @@ export function NewInvestigationView({
     try {
       const formData = new FormData();
       formData.append('title', title.trim() || `Case ${new Date().toLocaleDateString()}`);
-      formData.append('description', description.trim());
+      const fullDescription = [
+        priority !== 'Standard Review' ? `[Priority: ${priority}]` : '',
+        description.trim(),
+      ]
+        .filter(Boolean)
+        .join(' ');
+      formData.append('description', fullDescription);
       if (pastedText.trim()) {
         formData.append('pastedTextTitle', pastedTextTitle.trim() || 'accompanying-text.txt');
         formData.append('pastedText', pastedText.trim());
@@ -220,7 +295,7 @@ export function NewInvestigationView({
       }
       if (readiness === 'timeout') {
         throw new Error(
-          'Analysis server is still waking up. Please wait a moment and click Run Check again.'
+          'Analysis server is still waking up. Please wait a moment and click Run Forensic Analysis again.'
         );
       }
 
@@ -250,50 +325,124 @@ export function NewInvestigationView({
     return FileText;
   };
 
+  const activeModalities = new Set<EvidenceModality>(stagedFiles.map((f) => f.modality));
+  if (pastedText.trim()) activeModalities.add('text');
+
+  const totalItemsQueued = stagedFiles.length + (pastedText.trim() ? 1 : 0);
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Left: Investigation Details & Upload Dropzone */}
-        <div className="space-y-5 lg:col-span-7">
-          <div className="rounded-xl border border-slate-800 bg-[#11192B] p-6 space-y-4">
-            <h3 className="text-base font-semibold text-slate-100">
-              01. Case Details
-            </h3>
+      {/* Header & Intake Mode Switcher */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-blue-700 dark:text-sky-400">
+            Intake Protocol · Chain of Custody Ready
+          </p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
+            New Forensic Investigation
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm text-slate-500 dark:text-slate-400">
+            Configure case metadata, upload target media (images, video, audio, documents), or switch to dual-photo comparison.
+          </p>
+        </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300">
-                Case Name
-              </label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g., Press Clip & Quote Check"
-                className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#0B1120] px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-              />
+        <div className="inline-flex flex-wrap items-center gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
+          <span className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white dark:bg-sky-500 dark:text-slate-950">
+            <Layers className="h-3.5 w-3.5" />
+            <span>Multi-Modal Investigation</span>
+          </span>
+          {onSwitchToCompare && (
+            <button
+              type="button"
+              onClick={onSwitchToCompare}
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100 transition-colors"
+            >
+              <Columns2 className="h-3.5 w-3.5" />
+              <span>Dual Reference (Real vs. Suspicious)</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        {/* Left Column */}
+        <div className="space-y-5 lg:col-span-8">
+          {/* 01 Case Identity & Priority */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs dark:border-slate-800 dark:bg-[#11192B] space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-blue-50 font-mono text-xs font-bold text-blue-700 dark:bg-sky-500/15 dark:text-sky-400">
+                  01
+                </span>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Case Identity &amp; Priority
+                </h2>
+              </div>
+              <span className="font-mono text-[11px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                Chain of Custody Enabled
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-12">
+              <div className="sm:col-span-8">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Case Identifier / Label
+                </label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="e.g., Executive Speech & Press Clip Verification"
+                  className="mt-1.5 w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-100 dark:placeholder-slate-500 dark:focus:border-sky-500 transition-colors"
+                />
+              </div>
+
+              <div className="sm:col-span-4">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Priority Classification
+                </label>
+                <select
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-100 dark:focus:border-sky-500 transition-colors"
+                >
+                  <option value="Standard Review">Standard Review</option>
+                  <option value="High · Urgent Review">High · Urgent Review</option>
+                  <option value="Archival Verification">Archival Verification</option>
+                </select>
+              </div>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300">
-                What is this media about? (Optional)
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                Investigative Context &amp; Custody Notes (Optional)
               </label>
               <textarea
                 rows={3}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Add where the files came from or what claims you want to double-check..."
-                className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#0B1120] px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                placeholder="Document provenance source (e.g., social intercept, broadcast archival feed), claimed origin, or specific suspicion vectors..."
+                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-100 dark:placeholder-slate-500 dark:focus:border-sky-500 transition-colors"
               />
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-[#11192B] p-6">
-            <h3 className="text-base font-semibold text-slate-100">
-              02. Upload Files
-            </h3>
-            <p className="mt-1 text-xs text-slate-400">
-              Photos (JPG, PNG, WEBP) · Videos (MP4, MOV, AVI) · Audio (MP3, WAV, M4A) · Docs (TXT, PDF, DOCX)
-            </p>
+          {/* 02 Media Ingestion Portal */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-blue-50 font-mono text-xs font-bold text-blue-700 dark:bg-sky-500/15 dark:text-sky-400">
+                  02
+                </span>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Media Ingestion Portal
+                </h2>
+              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 font-mono text-[11px] font-semibold text-blue-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Auto-Hash (SHA-256)
+              </span>
+            </div>
 
             <label
               onDragOver={(e) => {
@@ -302,19 +451,35 @@ export function NewInvestigationView({
               }}
               onDragLeave={() => setDragActive(false)}
               onDrop={handleDrop}
-              className={`mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-8 text-center transition-colors ${
+              className={`mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
                 dragActive
-                  ? 'border-sky-400 bg-sky-500/10'
-                  : 'border-slate-700 bg-[#0B1120] hover:border-slate-500'
+                  ? 'border-blue-600 bg-blue-50/70 dark:border-sky-400 dark:bg-sky-500/10'
+                  : 'border-slate-300 bg-slate-50/70 hover:border-blue-400 hover:bg-blue-50/25 dark:border-slate-700 dark:bg-[#0B1120] dark:hover:border-sky-500/60'
               }`}
             >
-              <UploadCloud className="h-8 w-8 text-sky-400" />
-              <p className="mt-3 text-sm font-medium text-slate-200">
-                Drop files here, or click to choose files
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 text-blue-700 dark:bg-sky-500/15 dark:text-sky-400">
+                <UploadCloud className="h-6 w-6" />
+              </div>
+              <p className="mt-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Drop target evidence here, or browse system
               </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Up to 12 files · Max 60 MB each
+              <p className="mt-1 font-mono text-xs text-slate-500 dark:text-slate-400">
+                Supports up to 12 files · Max 60 MB per file
               </p>
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-2 font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                <span className="rounded border border-slate-200 bg-white px-2.5 py-1 dark:border-slate-700 dark:bg-[#11192B]">
+                  Images: JPG, PNG, WEBP
+                </span>
+                <span className="rounded border border-slate-200 bg-white px-2.5 py-1 dark:border-slate-700 dark:bg-[#11192B]">
+                  Video: MP4, MOV, AVI
+                </span>
+                <span className="rounded border border-slate-200 bg-white px-2.5 py-1 dark:border-slate-700 dark:bg-[#11192B]">
+                  Audio: WAV, MP3, M4A
+                </span>
+                <span className="rounded border border-slate-200 bg-white px-2.5 py-1 dark:border-slate-700 dark:bg-[#11192B]">
+                  Docs: TXT, PDF, DOCX
+                </span>
+              </div>
               <input
                 type="file"
                 multiple
@@ -327,80 +492,111 @@ export function NewInvestigationView({
               />
             </label>
 
-            {/* Optional Pasted Text, Caption, or Transcript */}
-            <div className="mt-5 border-t border-slate-800 pt-5">
-              <div className="flex items-center justify-between gap-3">
-                <label className="text-xs font-medium text-slate-300">
-                  Paste Text, Caption, or Transcript (Optional)
+            {/* Optional Pasted Text / Transcript */}
+            <div className="mt-5 border-t border-slate-100 pt-5 dark:border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Accompanying Transcript, Prompt, or Text (Optional AI Verification)
                 </label>
-                <input
-                  type="text"
-                  value={pastedTextTitle}
-                  onChange={(e) => setPastedTextTitle(e.target.value)}
-                  className="w-52 rounded-md border border-slate-700 bg-[#0B1120] px-2.5 py-1 font-mono text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={pastedTextTitle}
+                    onChange={(e) => setPastedTextTitle(e.target.value)}
+                    aria-label="Text document filename"
+                    className="w-48 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs text-slate-700 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-200 dark:focus:border-sky-500"
+                  />
+                  {pastedText && (
+                    <button
+                      type="button"
+                      onClick={() => setPastedText('')}
+                      className="text-xs font-medium text-blue-700 hover:text-blue-600 dark:text-sky-400 dark:hover:text-sky-300"
+                    >
+                      Clear Text Buffer
+                    </button>
+                  )}
+                </div>
               </div>
               <textarea
                 rows={4}
                 value={pastedText}
                 onChange={(e) => setPastedText(e.target.value)}
-                placeholder="Paste an article, essay, post caption, or transcript to check for AI-generated writing or compare with your files..."
-                className="mt-2 w-full rounded-lg border border-slate-700 bg-[#0B1120] px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                placeholder="Paste article content, speech transcription, social post caption, or suspected LLM text to analyze stylometry and cross-check against media..."
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 font-mono text-xs leading-relaxed text-slate-800 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-100 dark:placeholder-slate-500 dark:focus:border-sky-500 transition-colors"
               />
             </div>
           </div>
-        </div>
 
-        {/* Right: Staged Evidence Queue & Launch */}
-        <div className="space-y-5 lg:col-span-5">
-          <div className="rounded-xl border border-slate-800 bg-[#11192B] p-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-slate-100">
-                03. Files Ready to Check
-              </h3>
-              <span className="font-mono text-xs tabular-nums text-slate-400">
-                {stagedFiles.length + (pastedText.trim() ? 1 : 0)} file(s)
-              </span>
+          {/* Staged Forensic Targets Queue */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Staged Forensic Targets
+                </h2>
+                <span className="rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 font-mono text-xs font-semibold tabular-nums text-blue-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                  {totalItemsQueued} Queued
+                </span>
+              </div>
+
+              {stagedFiles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearAllStaged}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-rose-700 dark:text-slate-400 dark:hover:text-rose-300 transition-colors"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Remove All</span>
+                </button>
+              )}
             </div>
 
-            {stagedFiles.length === 0 && !pastedText.trim() ? (
-              <p className="mt-6 rounded-lg border border-slate-800 bg-[#0B1120] p-6 text-center text-xs text-slate-500">
-                No files added yet. Add photos, videos, audio clips, or documents to start checking.
+            {totalItemsQueued === 0 ? (
+              <p className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-[#0B1120] dark:text-slate-400">
+                No files staged yet. Drop media above or paste text to queue forensic targets.
               </p>
             ) : (
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 space-y-2.5">
                 {stagedFiles.map((item) => {
                   const Icon = iconForModality(item.modality);
                   return (
                     <div
                       key={item.id}
-                      className="flex items-start gap-3 rounded-lg border border-slate-800 bg-[#0B1120] p-3"
+                      className="flex items-center gap-3.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-[#0B1120]"
                     >
                       {item.modality === 'image' && item.previewUrl ? (
                         <img
                           src={item.previewUrl}
                           alt={item.file.name}
-                          className="h-14 w-14 rounded-md object-cover shrink-0 border border-slate-800"
+                          className="h-12 w-12 shrink-0 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
                         />
                       ) : (
-                        <div className="flex h-14 w-14 items-center justify-center rounded-md border border-slate-800 bg-[#161F33] shrink-0">
-                          <Icon className="h-6 w-6 text-sky-400" />
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-blue-700 dark:border-slate-800 dark:bg-[#161F33] dark:text-sky-400">
+                          <Icon className="h-5 w-5" />
                         </div>
                       )}
+
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-slate-100">
-                          {item.file.name}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            {item.file.name}
+                          </p>
+                          <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-blue-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                            {item.file.size >= 1024 * 1024
+                              ? `${(item.file.size / (1024 * 1024)).toFixed(2)} MB`
+                              : `${(item.file.size / 1024).toFixed(1)} KB`}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                          {item.modality.toUpperCase()} · {item.statusText}
                         </p>
-                        <p className="mt-0.5 font-mono text-[11px] tabular-nums text-slate-400">
-                          {item.modality.toUpperCase()} · {(item.file.size / 1024).toFixed(1)} KB
-                        </p>
-                        <p className="mt-1 text-xs text-sky-300">{item.statusText}</p>
                       </div>
+
                       <button
                         type="button"
                         onClick={() => removeStagedFile(item.id)}
                         aria-label={`Remove ${item.file.name}`}
-                        className="rounded p-1.5 text-slate-500 hover:bg-slate-800 hover:text-rose-400"
+                        className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-500/15 dark:hover:text-rose-300 transition-colors"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -409,24 +605,100 @@ export function NewInvestigationView({
                 })}
 
                 {pastedText.trim() && (
-                  <div className="flex items-start gap-3 rounded-lg border border-slate-800 bg-[#0B1120] p-3">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-md border border-slate-800 bg-[#161F33] shrink-0">
-                      <FileText className="h-6 w-6 text-sky-400" />
+                  <div className="flex items-center gap-3.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-[#0B1120]">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-blue-700 dark:border-slate-800 dark:bg-[#161F33] dark:text-sky-400">
+                      <FileText className="h-5 w-5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-slate-100">{pastedTextTitle}</p>
-                      <p className="mt-0.5 font-mono text-[11px] tabular-nums text-slate-400">
-                        TEXT · {pastedText.trim().length} chars
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                          {pastedTextTitle}
+                        </p>
+                        <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-blue-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                          {pastedText.trim().length} chars
+                        </span>
+                      </div>
+                      <p className="mt-0.5 line-clamp-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                        {pastedText}
                       </p>
-                      <p className="mt-1 line-clamp-1 text-xs text-slate-400">{pastedText}</p>
                     </div>
                   </div>
                 )}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Right Column: Active Engine Suite & Launch */}
+        <div className="space-y-5 lg:col-span-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B]">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-blue-50 font-mono text-xs font-bold text-blue-700 dark:bg-sky-500/15 dark:text-sky-400">
+                  03
+                </span>
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Active Engine Suite
+                </h2>
+              </div>
+              <span className="font-mono text-[11px] font-semibold text-blue-700 dark:text-sky-400">
+                {activeModalities.size > 0
+                  ? `${
+                      ENGINE_MODULES.filter((m) =>
+                        m.modalities.some((mod) => activeModalities.has(mod))
+                      ).length
+                    }/${ENGINE_MODULES.length} Matched`
+                  : `${ENGINE_MODULES.length}/${ENGINE_MODULES.length} Ready`}
+              </span>
+            </div>
+
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              TruthLens automatically dispatches each staged asset through its signal &amp; multimodal analyzers:
+            </p>
+
+            <div className="mt-4 space-y-2.5">
+              {ENGINE_MODULES.map((eng) => {
+                const isEngaged =
+                  activeModalities.size === 0 ||
+                  eng.modalities.some((m) => activeModalities.has(m));
+                return (
+                  <div
+                    key={eng.id}
+                    className={`flex items-start gap-2.5 rounded-lg border p-3 transition-colors ${
+                      isEngaged
+                        ? 'border-blue-100 bg-blue-50/40 dark:border-sky-500/30 dark:bg-sky-500/10'
+                        : 'border-slate-200 bg-slate-50/60 opacity-60 dark:border-slate-800 dark:bg-[#0B1120]'
+                    }`}
+                  >
+                    <CheckSquare
+                      className={`mt-0.5 h-4 w-4 shrink-0 ${
+                        isEngaged ? 'text-blue-700 dark:text-sky-400' : 'text-slate-400'
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                        {eng.name}
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                        {eng.desc}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs dark:border-slate-800 dark:bg-[#11192B] space-y-4">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-slate-500 dark:text-slate-400">Queued Assets</span>
+              <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                {totalItemsQueued} target(s)
+              </span>
+            </div>
 
             {errorMsg && (
-              <div className="mt-4 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200">
                 {errorMsg}
               </div>
             )}
@@ -434,19 +706,35 @@ export function NewInvestigationView({
             <button
               type="submit"
               disabled={submitting}
-              className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-sky-500 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-sky-400 transition-colors disabled:opacity-60"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-5 py-3 text-sm font-semibold text-white shadow-xs hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors disabled:opacity-60"
             >
               {submitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>
-                    {progressStage || 'Checking files...'} ({elapsedSec}s)
+                  <span className="truncate">
+                    {progressStage || 'Analyzing...'} ({elapsedSec}s)
                   </span>
                 </>
               ) : (
-                <span>Run Check</span>
+                <>
+                  <Play className="h-4 w-4 fill-current" />
+                  <span>Run Forensic Analysis</span>
+                </>
               )}
             </button>
+
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={handleClearForm}
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-[#0B1120] dark:text-slate-200 dark:hover:bg-slate-800 transition-colors"
+            >
+              Reset Investigation Form
+            </button>
+
+            <p className="text-center text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+              All uploaded evidence is hashed via SHA-256 on intake and analyzed across isolated modality pipelines.
+            </p>
           </div>
         </div>
       </div>

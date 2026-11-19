@@ -1,0 +1,6 @@
+{
+  "name": "TruthLens — Multimodal Digital Forensics",
+  "description": "Multimodal digital forensics and deepfake detection platform analysing images, video, audio, and text with cross-modal correlation and explainable PDF reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

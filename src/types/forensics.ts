@@ -131,3 +131,61 @@ export type WorkspaceTab =
   | 'history'
   | 'reports'
   | 'settings';
+
+export type ImageComparisonVerdict =
+  | 'AI-GENERATED'
+  | 'MANIPULATED / EDITED'
+  | 'REAL / AUTHENTIC'
+  | 'INCONCLUSIVE';
+
+export interface ComparedImageSignals {
+  filename: string;
+  width: number;
+  height: number;
+  format: string;
+  elaMeanDelta: number;
+  elaMaxDelta: number;
+  fftMetrics: {
+    highFreqEnergyRatio: number;
+    periodicGridPeakRatio: number;
+    radialDropoffSlope: number;
+  } | null;
+  laplacianMean: number | null;
+  blockNoiseUniformity: number | null;
+  hasCameraHardwareTags: boolean;
+  cameraLabel: string | null;
+  software: string | null;
+  provenance: {
+    hasC2paCredentials: boolean;
+    hasWatermarkMarkers: boolean;
+    aiGeneratorSignatures: string[];
+    provenanceSummary: string;
+  };
+  previewUrl: string;
+}
+
+export interface ComparisonDifferenceItem {
+  area: string;
+  realObservation: string;
+  suspiciousObservation: string;
+  significance: 'Suspicious' | 'Inconclusive' | 'Consistent';
+  suspiciousRegion: { x: number; y: number; width: number; height: number } | null;
+}
+
+export interface ImageComparisonResult {
+  verdict: ImageComparisonVerdict;
+  suspiciousAiProbability: number | null;
+  confidence: number;
+  sameSceneOrSubject: boolean;
+  summary: string;
+  limitations: string;
+  modelUsed: string;
+  pixelSimilarityPct: number;
+  meanPixelDiffPct: number;
+  noiseDelta: number | null;
+  fftDelta: number | null;
+  diffHeatmapUrl: string | null;
+  realImage: ComparedImageSignals;
+  suspiciousImage: ComparedImageSignals;
+  differences: ComparisonDifferenceItem[];
+}

@@ -346,3 +346,21 @@ export async function deleteUserInvestigation(userId: number, investigationId: n
     throw new Error('Failed to delete investigation.', { cause: error });
   }
 }
+
+export async function getUserEvidenceItemById(userId: number, evidenceId: number) {
+  try {
+    const rows = await db
+      .select({
+        item: evidenceItems,
+        ownerId: investigations.userId,
+      })
+      .from(evidenceItems)
+      .innerJoin(investigations, eq(evidenceItems.investigationId, investigations.id))
+      .where(and(eq(evidenceItems.id, evidenceId), eq(investigations.userId, userId)))
+      .limit(1);
+    return rows[0]?.item ?? null;
+  } catch (error) {
+    console.error('Database error in getUserEvidenceItemById:', error);
+    return null;
+  }
+}

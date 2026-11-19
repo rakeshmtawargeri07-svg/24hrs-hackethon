@@ -10,6 +10,7 @@ import {
   deleteUserInvestigation,
   getInvestigationDetail,
   getUserDashboardData,
+  getUserEvidenceItemById,
   insertEvidenceItemWithFindings,
   logUserActivity,
   replaceCrossModalCorrelations,
@@ -20,6 +21,7 @@ import { updateUserSettings } from './src/db/users.ts';
 import { AuthRequest, requireAuth } from './src/middleware/auth.ts';
 import { analyzeAudioEvidence, AudioAcousticFeatures } from './src/services/analyzers/audioForensics.ts';
 import { correlateInvestigationEvidence } from './src/services/analyzers/crossModalCorrelator.ts';
+import { compareRealVsSuspiciousImages } from './src/services/analyzers/imageComparison.ts';
 import { analyzeImageEvidence } from './src/services/analyzers/imageForensics.ts';
 import { analyzeTextEvidence } from './src/services/analyzers/textForensics.ts';
 import { analyzeVideoEvidence, VideoKeyframeInput } from './src/services/analyzers/videoForensics.ts';
@@ -246,6 +248,108 @@ async function startServer() {
       res.status(500).json({ error: error.message || 'Cross-modal correlation failed.' });
     }
   });
+
+  // Compare a known Real Reference photo against a Suspicious photo
+  app.post(
+    '/api/images/compare',
+    requireAuth,
+    (req: AuthRequest, res, next) => {
+      upload.fields([
+        { name: 'realImage', maxCount: 1 },
+        { name: 'suspiciousImage', maxCount: 1 },
+      ])(req, res, (err: any) => {
+        if (err) {
+          return res.status(400).json({ error: err.message || 'Invalid image upload.' });
+        }
+        next();
+      });
+    },
+    async (req: AuthRequest, res) => {
+      try {
+        const dbUser = req.dbUser!;
+        const filesMap = (req.files as Record<string, Express.Multer.File[]>) ?? {};
+        const realUpload = filesMap.realImage?.[0];
+        const suspiciousUpload = filesMap.suspiciousImage?.[0];
+        const realEvidenceId = Number(req.body?.realEvidenceId || 0);
+        const suspiciousEvidenceId = Number(req.body?.suspiciousEvidenceId || 0);
+        const notes = String(req.body?.notes || '').trim();
+
+        const resolveImageSource = async (
+          uploaded: Express.Multer.File | undefined,
+          evidenceId: number,
+          roleLabel: string
+        ): Promise<{ buffer: Buffer; filename: string; mimeType: string; previewUrl: string }> => {
+          if (uploaded) {
+            const ext = path.extname(uploaded.originalname).toLowerCase();
+            if (ALLOWED_EXTENSIONS[ext] !== 'image') {
+              throw new Error(`${roleLabel} must be an image (JPG, PNG, or WEBP).`);
+            }
+            const hash = crypto.createHash('sha256').update(uploaded.buffer).digest('hex');
+            const safeFilename = `${hash.slice(0, 16)}-${crypto.randomUUID().slice(0, 8)}${ext}`;
+            await fs.promises.writeFile(path.join(EVIDENCE_DIR, safeFilename), uploaded.buffer);
+            return {
+              buffer: uploaded.buffer,
+              filename: uploaded.originalname,
+              mimeType: uploaded.mimetype,
+              previewUrl: `/uploads/evidence/${safeFilename}`,
+            };
+          }
+
+          if (Number.isFinite(evidenceId) && evidenceId > 0) {
+            const item = await getUserEvidenceItemById(dbUser.id, evidenceId);
+            if (!item || item.modality !== 'image') {
+              throw new Error(`Selected ${roleLabel} could not be found in your saved checks.`);
+            }
+            const safeRel = item.storagePath.replace(/^\/+/, '');
+            const diskPath = path.resolve(__dirname, safeRel);
+            if (!diskPath.startsWith(UPLOADS_ROOT) || !fs.existsSync(diskPath)) {
+              throw new Error(`Stored file for ${item.filename} is no longer available on disk.`);
+            }
+            const buffer = await fs.promises.readFile(diskPath);
+            return {
+              buffer,
+              filename: item.filename,
+              mimeType: item.mimeType,
+              previewUrl: item.storagePath,
+            };
+          }
+
+          throw new Error(`Please provide both a Real Reference photo and a Suspicious photo.`);
+        };
+
+        const [realSource, suspSource] = await Promise.all([
+          resolveImageSource(realUpload, realEvidenceId, 'Real Reference photo'),
+          resolveImageSource(suspiciousUpload, suspiciousEvidenceId, 'Suspicious photo'),
+        ]);
+
+        const comparisonId = `cmp-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+        const comparison = await compareRealVsSuspiciousImages({
+          realBuffer: realSource.buffer,
+          realFilename: realSource.filename,
+          realMimeType: realSource.mimeType,
+          realPreviewUrl: realSource.previewUrl,
+          suspiciousBuffer: suspSource.buffer,
+          suspiciousFilename: suspSource.filename,
+          suspiciousMimeType: suspSource.mimeType,
+          suspiciousPreviewUrl: suspSource.previewUrl,
+          elaDir: ELA_DIR,
+          comparisonId,
+          notes: notes || undefined,
+        });
+
+        void logUserActivity({
+          userId: dbUser.id,
+          actionType: 'image_comparison_completed',
+          description: `Compared "${realSource.filename}" (Real) vs. "${suspSource.filename}" (Suspicious) — Verdict: ${comparison.verdict}.`,
+        });
+
+        res.json({ comparison });
+      } catch (error: any) {
+        console.error('Error in /api/images/compare:', error);
+        res.status(400).json({ error: error?.message || 'Failed to compare images.' });
+      }
+    }
+  );
 
   // Create & run full multimodal investigation
   app.post(

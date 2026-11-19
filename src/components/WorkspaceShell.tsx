@@ -1,4 +1,5 @@
 import {
+  Columns2,
   FilePlus2,
   FolderSearch,
   LayoutDashboard,
@@ -13,11 +14,12 @@ import { apiFetch } from '../lib/api';
 import { exportForensicPdfReport } from '../lib/pdfReport';
 import { DashboardData, InvestigationDetail } from '../types/forensics';
 import { CaseWorkspaceView } from './views/CaseWorkspaceView';
+import { CompareImagesView } from './views/CompareImagesView';
 import { DashboardView } from './views/DashboardView';
 import { NewInvestigationView } from './views/NewInvestigationView';
 import { SettingsView } from './views/SettingsView';
 
-type SimpleTab = 'overview' | 'new' | 'case' | 'settings';
+type SimpleTab = 'overview' | 'new' | 'compare' | 'case' | 'settings';
 
 const NAV_ITEMS: Array<{
   id: SimpleTab;
@@ -26,6 +28,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { id: 'overview', label: 'Home', icon: LayoutDashboard },
   { id: 'new', label: 'New Check', icon: FilePlus2 },
+  { id: 'compare', label: 'Compare Photos', icon: Columns2 },
   { id: 'case', label: 'Case Results', icon: FolderSearch },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
@@ -317,6 +320,14 @@ export function WorkspaceShell({ onBackToLanding }: { onBackToLanding: () => voi
 
           {activeTab === 'new' && (
             <NewInvestigationView onInvestigationCreated={handleInvestigationCreated} />
+          )}
+
+          {activeTab === 'compare' && (
+            <CompareImagesView
+              previousImages={(dashboardData?.evidenceItems ?? []).filter(
+                (item) => item.modality === 'image'
+              )}
+            />
           )}
 
           {activeTab === 'case' && (

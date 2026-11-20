@@ -18,9 +18,20 @@ export const requireAuth = async (
     return res.status(401).json({ error: 'Unauthorized: Missing authentication token' });
   }
 
-  const token = authHeader.split('Bearer ')[1];
+  const token = authHeader.split('Bearer ')[1]?.trim();
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: Empty authentication token' });
+  }
+
+  let decodedToken: DecodedIdToken;
   try {
-    const decodedToken = await adminAuth.verifyIdToken(token);
+    decodedToken = await adminAuth.verifyIdToken(token);
+  } catch (error) {
+    console.error('Error verifying Firebase ID token:', error);
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+  }
+
+  try {
     req.user = decodedToken;
     req.dbUser = await getOrCreateUser(
       decodedToken.uid,
@@ -29,8 +40,8 @@ export const requireAuth = async (
       decodedToken.picture ?? null
     );
     next();
-  } catch (error) {
-    console.error('Error verifying Firebase ID token:', error);
-    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+  } catch (error: any) {
+    console.error('Error synchronizing authenticated user record:', error);
+    return res.status(500).json({ error: error?.message || 'Failed to synchronize user account.' });
   }
 };

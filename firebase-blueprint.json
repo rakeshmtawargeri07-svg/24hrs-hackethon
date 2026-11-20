@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Authenticated Google user profile record for TruthLens analysts.",
+      "description": "Authenticated Google user profile and workspace preferences for TruthLens analysts.",
       "type": "object",
       "properties": {
         "uid": {
@@ -36,6 +36,20 @@
           "enum": ["google.com"],
           "description": "Authentication provider identifier."
         },
+        "analystOrganization": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120,
+          "description": "Analyst organization label used in exported forensic reports."
+        },
+        "defaultConfidenceThreshold": {
+          "type": "integer",
+          "description": "Default confidence threshold (20 to 95)."
+        },
+        "includeLimitationsInExports": {
+          "type": "boolean",
+          "description": "Whether analytical limitations are included in PDF exports."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -48,6 +62,311 @@
         }
       },
       "required": ["uid", "email", "provider", "createdAt", "updatedAt"]
+    },
+    "Investigation": {
+      "title": "Investigation",
+      "description": "Multimodal forensic investigation case record owned by a TruthLens analyst.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "integer"
+        },
+        "caseCode": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 40
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "overallAssessment": {
+          "type": "string",
+          "enum": [
+            "Suspicious",
+            "No Significant Indicators Detected",
+            "Inconclusive",
+            "Analysis Unavailable"
+          ]
+        },
+        "overallConfidence": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "limitations": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "recommendations": {
+          "type": "array"
+        },
+        "evidenceCount": {
+          "type": "integer"
+        },
+        "modalities": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "numericId",
+        "caseCode",
+        "title",
+        "description",
+        "overallAssessment",
+        "overallConfidence",
+        "summary",
+        "limitations",
+        "recommendations",
+        "evidenceCount",
+        "modalities",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EvidenceItem": {
+      "title": "EvidenceItem",
+      "description": "Analyzed media or text evidence artifact linked to an investigation.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "integer"
+        },
+        "investigationId": {
+          "type": "integer"
+        },
+        "investigationDocId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "modality": {
+          "type": "string",
+          "enum": ["image", "video", "audio", "text"]
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 260
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "fileSize": {
+          "type": "integer"
+        },
+        "sha256Hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "storagePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "elaPath": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 512
+        },
+        "metadataJson": {
+          "type": "object"
+        },
+        "extractedText": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "Suspicious",
+            "No Significant Indicators Detected",
+            "Inconclusive",
+            "Analysis Unavailable"
+          ]
+        },
+        "confidence": {
+          "type": "integer"
+        },
+        "technicalSummary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "findings": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "numericId",
+        "investigationId",
+        "investigationDocId",
+        "modality",
+        "filename",
+        "mimeType",
+        "fileSize",
+        "sha256Hash",
+        "storagePath",
+        "metadataJson",
+        "classification",
+        "confidence",
+        "technicalSummary",
+        "findings",
+        "createdAt"
+      ]
+    },
+    "CrossModalCorrelation": {
+      "title": "CrossModalCorrelation",
+      "description": "Cross-modal consistency finding linking two or more evidence items in an investigation.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "integer"
+        },
+        "investigationId": {
+          "type": "integer"
+        },
+        "investigationDocId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "pairType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "sourceEvidenceIds": {
+          "type": "array"
+        },
+        "findingSummary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 2500
+        },
+        "consistencyStatus": {
+          "type": "string",
+          "enum": [
+            "Suspicious",
+            "No Significant Indicators Detected",
+            "Inconclusive",
+            "Analysis Unavailable"
+          ]
+        },
+        "confidence": {
+          "type": "integer"
+        },
+        "limitations": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "numericId",
+        "investigationId",
+        "investigationDocId",
+        "pairType",
+        "title",
+        "sourceEvidenceIds",
+        "findingSummary",
+        "consistencyStatus",
+        "confidence",
+        "limitations",
+        "createdAt"
+      ]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Forensic audit trail event for an analyst's workspace actions.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numericId": {
+          "type": "integer"
+        },
+        "investigationId": {
+          "type": "integer"
+        },
+        "actionType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "numericId", "actionType", "description", "createdAt"]
     }
   },
   "firestore": {
@@ -55,7 +374,31 @@
       "schema": {
         "$ref": "#/entities/UserProfile"
       },
-      "description": "Private user profile documents keyed by Firebase Auth UID, containing Google sign-in identity fields."
+      "description": "Private user profile and analyst preferences keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/investigations/{investigationId}": {
+      "schema": {
+        "$ref": "#/entities/Investigation"
+      },
+      "description": "User-owned forensic investigation case documents."
+    },
+    "/users/{userId}/evidenceItems/{evidenceId}": {
+      "schema": {
+        "$ref": "#/entities/EvidenceItem"
+      },
+      "description": "Analyzed media and document evidence items with findings belonging to an investigation."
+    },
+    "/users/{userId}/correlations/{correlationId}": {
+      "schema": {
+        "$ref": "#/entities/CrossModalCorrelation"
+      },
+      "description": "Cross-modal correlation records generated for an investigation."
+    },
+    "/users/{userId}/activityLogs/{logId}": {
+      "schema": {
+        "$ref": "#/entities/ActivityLog"
+      },
+      "description": "Analyst audit activity log entries."
     }
   }
 }

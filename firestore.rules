@@ -26,9 +26,33 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isValidClassification(val) {
+      return val is string && val in [
+        'Suspicious',
+        'No Significant Indicators Detected',
+        'Inconclusive',
+        'Analysis Unavailable'
+      ];
+    }
+
+    function isValidModality(val) {
+      return val is string && val in ['image', 'video', 'audio', 'text'];
+    }
+
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'email', 'provider', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'provider', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid',
+          'email',
+          'displayName',
+          'photoUrl',
+          'provider',
+          'analystOrganization',
+          'defaultConfidenceThreshold',
+          'includeLimitationsInExports',
+          'createdAt',
+          'updatedAt'
+        ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && data.email is string
@@ -39,8 +63,227 @@ service cloud.firestore {
         && data.provider == 'google.com'
         && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120))
         && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1024))
+        && (!('analystOrganization' in data) || (data.analystOrganization is string && data.analystOrganization.size() <= 120))
+        && (!('defaultConfidenceThreshold' in data) || (data.defaultConfidenceThreshold is int && data.defaultConfidenceThreshold >= 20 && data.defaultConfidenceThreshold <= 95))
+        && (!('includeLimitationsInExports' in data) || data.includeLimitationsInExports is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
+    }
+
+    function isValidInvestigation(data, userId) {
+      return data.keys().hasAll([
+          'ownerUid',
+          'numericId',
+          'caseCode',
+          'title',
+          'description',
+          'overallAssessment',
+          'overallConfidence',
+          'summary',
+          'limitations',
+          'recommendations',
+          'evidenceCount',
+          'modalities',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid',
+          'numericId',
+          'caseCode',
+          'title',
+          'description',
+          'overallAssessment',
+          'overallConfidence',
+          'summary',
+          'limitations',
+          'recommendations',
+          'evidenceCount',
+          'modalities',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.numericId is int
+        && data.numericId > 0
+        && data.caseCode is string
+        && data.caseCode.size() >= 3
+        && data.caseCode.size() <= 40
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 200
+        && data.description is string
+        && data.description.size() <= 4000
+        && isValidClassification(data.overallAssessment)
+        && data.overallConfidence is int
+        && data.overallConfidence >= 0
+        && data.overallConfidence <= 100
+        && data.summary is string
+        && data.summary.size() <= 4000
+        && data.limitations is string
+        && data.limitations.size() <= 2000
+        && data.recommendations is list
+        && data.recommendations.size() <= 12
+        && (data.recommendations.size() == 0 || (data.recommendations[0] is string && data.recommendations[0].size() <= 500))
+        && data.evidenceCount is int
+        && data.evidenceCount >= 0
+        && data.evidenceCount <= 24
+        && data.modalities is list
+        && data.modalities.size() <= 4
+        && (data.modalities.size() == 0 || isValidModality(data.modalities[0]))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEvidenceItem(data, userId) {
+      return data.keys().hasAll([
+          'ownerUid',
+          'numericId',
+          'investigationId',
+          'investigationDocId',
+          'modality',
+          'filename',
+          'mimeType',
+          'fileSize',
+          'sha256Hash',
+          'storagePath',
+          'metadataJson',
+          'classification',
+          'confidence',
+          'technicalSummary',
+          'findings',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid',
+          'numericId',
+          'investigationId',
+          'investigationDocId',
+          'modality',
+          'filename',
+          'mimeType',
+          'fileSize',
+          'sha256Hash',
+          'storagePath',
+          'elaPath',
+          'metadataJson',
+          'extractedText',
+          'classification',
+          'confidence',
+          'technicalSummary',
+          'findings',
+          'createdAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.numericId is int
+        && data.numericId > 0
+        && data.investigationId is int
+        && data.investigationId > 0
+        && isValidId(data.investigationDocId)
+        && isValidModality(data.modality)
+        && data.filename is string
+        && data.filename.size() >= 1
+        && data.filename.size() <= 260
+        && data.mimeType is string
+        && data.mimeType.size() >= 1
+        && data.mimeType.size() <= 120
+        && data.fileSize is int
+        && data.fileSize >= 0
+        && data.sha256Hash is string
+        && data.sha256Hash.size() >= 1
+        && data.sha256Hash.size() <= 128
+        && data.storagePath is string
+        && data.storagePath.size() >= 1
+        && data.storagePath.size() <= 512
+        && (!('elaPath' in data) || data.elaPath == null || (data.elaPath is string && data.elaPath.size() <= 512))
+        && data.metadataJson is map
+        && data.metadataJson.size() <= 100
+        && (!('extractedText' in data) || data.extractedText == null || (data.extractedText is string && data.extractedText.size() <= 20000))
+        && isValidClassification(data.classification)
+        && data.confidence is int
+        && data.confidence >= 0
+        && data.confidence <= 100
+        && data.technicalSummary is string
+        && data.technicalSummary.size() <= 2000
+        && data.findings is list
+        && data.findings.size() <= 25
+        && (data.findings.size() == 0 || data.findings[0] is map)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCorrelation(data, userId) {
+      return data.keys().hasAll([
+          'ownerUid',
+          'numericId',
+          'investigationId',
+          'investigationDocId',
+          'pairType',
+          'title',
+          'sourceEvidenceIds',
+          'findingSummary',
+          'consistencyStatus',
+          'confidence',
+          'limitations',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid',
+          'numericId',
+          'investigationId',
+          'investigationDocId',
+          'pairType',
+          'title',
+          'sourceEvidenceIds',
+          'findingSummary',
+          'consistencyStatus',
+          'confidence',
+          'limitations',
+          'createdAt'
+        ])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.numericId is int
+        && data.numericId > 0
+        && data.investigationId is int
+        && data.investigationId > 0
+        && isValidId(data.investigationDocId)
+        && data.pairType is string
+        && data.pairType.size() >= 1
+        && data.pairType.size() <= 80
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 240
+        && data.sourceEvidenceIds is list
+        && data.sourceEvidenceIds.size() <= 20
+        && (data.sourceEvidenceIds.size() == 0 || data.sourceEvidenceIds[0] is int)
+        && data.findingSummary is string
+        && data.findingSummary.size() <= 2500
+        && isValidClassification(data.consistencyStatus)
+        && data.confidence is int
+        && data.confidence >= 0
+        && data.confidence <= 100
+        && data.limitations is string
+        && data.limitations.size() <= 1000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidActivityLog(data, userId) {
+      return data.keys().hasAll(['ownerUid', 'numericId', 'actionType', 'description', 'createdAt'])
+        && data.keys().hasOnly(['ownerUid', 'numericId', 'investigationId', 'actionType', 'description', 'createdAt'])
+        && isValidId(data.ownerUid)
+        && data.ownerUid == userId
+        && data.numericId is int
+        && data.numericId > 0
+        && (!('investigationId' in data) || data.investigationId == null || data.investigationId is int)
+        && data.actionType is string
+        && data.actionType.size() >= 1
+        && data.actionType.size() <= 80
+        && data.description is string
+        && data.description.size() >= 1
+        && data.description.size() <= 1000
+        && data.createdAt is timestamp;
     }
 
     match /users/{userId} {
@@ -57,13 +300,100 @@ service cloud.firestore {
       allow update: if isValidId(userId)
         && isOwner(userId)
         && isValidUserProfile(incoming())
-        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoUrl', 'updatedAt'])
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'email',
+          'displayName',
+          'photoUrl',
+          'analystOrganization',
+          'defaultConfidenceThreshold',
+          'includeLimitationsInExports',
+          'updatedAt'
+        ])
         && incoming().uid == existing().uid
         && incoming().provider == existing().provider
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time;
 
       allow delete: if false;
+
+      match /investigations/{investigationId} {
+        allow get: if isValidId(userId) && isValidId(investigationId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(investigationId)
+          && isOwner(userId)
+          && isValidInvestigation(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+
+        allow update: if isValidId(userId)
+          && isValidId(investigationId)
+          && isOwner(userId)
+          && isValidInvestigation(incoming(), userId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'overallAssessment',
+            'overallConfidence',
+            'summary',
+            'limitations',
+            'recommendations',
+            'updatedAt'
+          ])
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().numericId == existing().numericId
+          && incoming().caseCode == existing().caseCode
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time;
+
+        allow delete: if isValidId(userId) && isValidId(investigationId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /evidenceItems/{evidenceId} {
+        allow get: if isValidId(userId) && isValidId(evidenceId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(evidenceId)
+          && isOwner(userId)
+          && isValidEvidenceItem(incoming(), userId)
+          && incoming().createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/investigations/$(incoming().investigationDocId));
+
+        allow update: if false;
+
+        allow delete: if isValidId(userId) && isValidId(evidenceId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /correlations/{correlationId} {
+        allow get: if isValidId(userId) && isValidId(correlationId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(correlationId)
+          && isOwner(userId)
+          && isValidCorrelation(incoming(), userId)
+          && incoming().createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/investigations/$(incoming().investigationDocId));
+
+        allow update: if false;
+
+        allow delete: if isValidId(userId) && isValidId(correlationId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /activityLogs/{logId} {
+        allow get: if isValidId(userId) && isValidId(logId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(logId)
+          && isOwner(userId)
+          && isValidActivityLog(incoming(), userId)
+          && incoming().createdAt == request.time;
+
+        allow update: if false;
+
+        allow delete: if isValidId(userId) && isValidId(logId) && isOwner(userId) && existing().ownerUid == request.auth.uid;
+      }
     }
   }
 }

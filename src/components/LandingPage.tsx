@@ -59,7 +59,7 @@ export function LandingPage({
 }: {
   onEnterWorkspace: () => void;
 }) {
-  const { user, signInWithGoogle, signUpWithGoogle, logout, authError } = useAuth();
+  const { user, dbUser, signInWithGoogle, signUpWithGoogle, logout, refreshProfile, authError, clearAuthError } = useAuth();
   const [signingIn, setSigningIn] = useState<'signin' | 'signup' | null>(null);
   const [activeTab, setActiveTab] = useState<ToolTab>('precheck');
 
@@ -222,12 +222,16 @@ export function LandingPage({
   };
 
   const handleGoogleAuth = async (mode: 'signin' | 'signup') => {
-    if (user) {
-      onEnterWorkspace();
-      return;
-    }
+    clearAuthError();
     setSigningIn(mode);
     try {
+      if (user) {
+        if (!dbUser) {
+          await refreshProfile();
+        }
+        onEnterWorkspace();
+        return;
+      }
       if (mode === 'signup') {
         await signUpWithGoogle();
       } else {
@@ -288,7 +292,7 @@ export function LandingPage({
               <ThemeToggle />
               <button
                 type="button"
-                onClick={() => void handleGoogleAuth(user ? 'signin' : 'signup')}
+                onClick={() => void handleGoogleAuth('signin')}
                 disabled={signingIn !== null}
                 className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white shadow-2xs hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
               >
@@ -620,8 +624,9 @@ export function LandingPage({
 
                             <button
                               type="button"
-                              onClick={() => void handleGoogleAuth(user ? 'signin' : 'signup')}
-                              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors"
+                              onClick={() => void handleGoogleAuth('signin')}
+                              disabled={signingIn !== null}
+                              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-600 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 transition-colors disabled:opacity-60"
                             >
                               <span>
                                 {user

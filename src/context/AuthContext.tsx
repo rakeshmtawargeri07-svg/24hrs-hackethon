@@ -19,6 +19,7 @@ import { UserProfile } from '../types/forensics';
 
 const UID_REGEX = /^[a-zA-Z0-9_\-]+$/;
 const inFlightFirestoreSync = new Map<string, Promise<void>>();
+const inFlightProfileSync = new Map<string, Promise<UserProfile>>();
 
 function formatAuthError(err: any): string {
   const code = String(err?.code || '');
@@ -34,7 +35,34 @@ function formatAuthError(err: any): string {
   if (code === 'auth/unauthorized-domain') {
     return 'This preview domain is not authorized in Firebase Authentication.';
   }
-  return err?.message || 'Google sign-in failed. Please try again.';
+  if (code === 'auth/operation-not-allowed') {
+    return 'Google Sign-In is not enabled for this Firebase project.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Network error while contacting Firebase Authentication. Please check your connection and try again.';
+  }
+  if (code === 'auth/user-disabled') {
+    return 'This account has been disabled in Firebase Authentication.';
+  }
+  if (code === 'auth/account-exists-with-different-credential') {
+    return 'An account already exists with this email using a different sign-in provider.';
+  }
+  if (code === 'auth/too-many-requests') {
+    return 'Too many sign-in attempts. Please wait a moment and try again.';
+  }
+
+  const rawMsg = typeof err?.message === 'string' ? err.message : '';
+  if (rawMsg.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawMsg);
+      if (parsed?.error) {
+        return `Unable to synchronize your Firestore profile: ${parsed.error}`;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return rawMsg || 'Google sign-in failed. Please try again.';
 }
 
 async function performFirestoreUserProfileSync(firebaseUser: User): Promise<void> {
@@ -104,6 +132,7 @@ interface AuthContextValue {
   loading: boolean;
   isNewUser: boolean;
   authError: string | null;
+  clearAuthError: () => void;
   signInWithGoogle: () => Promise<boolean>;
   signUpWithGoogle: () => Promise<boolean>;
   logout: () => Promise<void>;
@@ -119,18 +148,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isNewUser, setIsNewUser] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const syncProfile = useCallback(async (firebaseUser: User | null) => {
+  const syncProfile = useCallback(async (firebaseUser: User | null, throwOnError = false) => {
     if (!firebaseUser) {
       setDbUser(null);
       return;
     }
     try {
-      await syncFirestoreUserProfile(firebaseUser);
-      const res = await apiFetch<{ user: UserProfile }>(firebaseUser, '/api/me');
-      setDbUser(res.user);
+      let profilePromise = inFlightProfileSync.get(firebaseUser.uid);
+      if (!profilePromise) {
+        profilePromise = (async () => {
+          await firebaseUser.getIdToken();
+          await syncFirestoreUserProfile(firebaseUser);
+          const res = await apiFetch<{ user: UserProfile }>(firebaseUser, '/api/me');
+          return res.user;
+        })().finally(() => {
+          inFlightProfileSync.delete(firebaseUser.uid);
+        });
+        inFlightProfileSync.set(firebaseUser.uid, profilePromise);
+      }
+      const syncedUser = await profilePromise;
+      setDbUser(syncedUser);
       setAuthError(null);
     } catch (err: any) {
-      setAuthError(err?.message || 'Unable to synchronize analyst profile.');
+      setAuthError(formatAuthError(err));
+      if (throwOnError) {
+        throw err;
+      }
     }
   }, []);
 
@@ -138,7 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
-        await syncProfile(firebaseUser);
+        await syncProfile(firebaseUser, false);
       } else {
         setDbUser(null);
         setIsNewUser(false);
@@ -156,7 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const newlyCreated = Boolean(additional?.isNewUser);
       setIsNewUser(newlyCreated);
       setUser(cred.user);
-      await syncProfile(cred.user);
+      await syncProfile(cred.user, true);
       return newlyCreated;
     } catch (err: any) {
       setAuthError(formatAuthError(err));
@@ -173,8 +216,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    await syncProfile(user);
+    await syncProfile(user, true);
   }, [syncProfile, user]);
+
+  const clearAuthError = useCallback(() => {
+    setAuthError(null);
+  }, []);
 
   return (
     <AuthContext.Provider
@@ -184,6 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         isNewUser,
         authError,
+        clearAuthError,
         signInWithGoogle: authenticateWithGoogle,
         signUpWithGoogle: authenticateWithGoogle,
         logout,
